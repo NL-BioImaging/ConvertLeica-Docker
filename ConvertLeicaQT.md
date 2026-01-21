@@ -55,7 +55,26 @@ ConvertLeicaQT is a PyQt6 desktop application to browse Leica files, preview ima
   - LIF: If tilescan with `OverlapIsNegative`, create a single‑image `.lif`. Otherwise create OME‑TIFF (RGB vs multi‑channel handled by separate converters).
   - XLEF/LOF: If XY ≤ threshold (checkbox), return/copy original path; else convert to OME‑TIFF (RGB handled accordingly).
 - The result dialog lists created paths; the log shows detailed progress.
+### Robust file saving
 
+The converter uses a **temp-first approach** for reliable saving:
+
+1. TIFF is saved to the system temp directory first
+2. File is copied to output folder with size verification
+3. On failure, retries up to 10 times with progressive backoff (1 min, 2 min, ... 10 min)
+4. Temp file is cleaned up only after all copies succeed
+
+### Dual progress bars
+
+With progress enabled, two distinct progress indicators appear in the log:
+
+```
+Converting to OME-TIFF: |██████████████████████████████████████████████████| 100.0% Processing complete
+  Saving: <▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓> 100.0% - Copying to output
+```
+
+- **Processing bar** (`|███|`): Data reading, stitching, pyvips image creation
+- **Saving bar** (`<▓▓▓>`): TIFF writing and file copying phases
 ## Configuration and defaults
 
 - Initial root folder: If `server.ROOT_DIR` exists and is accessible, it’s used as the starting point. Otherwise the current working directory.
@@ -76,18 +95,25 @@ ConvertLeicaQT is a PyQt6 desktop application to browse Leica files, preview ima
 - No cache hits: Ensure metadata includes a stable `UniqueID`/`uuid`/`ImageUUID`. If missing, the app derives a fallback key that may not be stable across different sources.
 - Slow previews: Verify `opencv-python` and `numpy` are installed and hardware isn’t constrained. Large multi‑channel datasets will be slower on first render (cold cache).
 - Empty trees: Some noise files/folders are filtered; ensure you double‑click a .lif/.xlef/.lof to populate the right content tree.
-- Styling missing: Check `styles/darktheme.css` and that `images/` exists.
-
+- Styling missing: Check `styles/darktheme.css` and that `images/` exists.- Network save failures: The converter retries up to 10 times with increasing delays. Check the log for retry messages. If failures persist, try using a local output folder.
+- Temp folder issues: By default, the system temp directory is used. On constrained systems, ensure sufficient temp disk space for large TIFF files.
 ## Requirements
+
+Install with:
+
+```sh
+pip install -r requirements-qt6ui.txt
+```
 
 Core runtime for previews and conversion:
 
 - numpy
 - opencv-python
 - pyvips
+
 GUI runtime:
 
-- PyQt6 (install if not already available)
+- PyQt6 (included in requirements-qt6ui.txt)
 
 ## Running (example)
 

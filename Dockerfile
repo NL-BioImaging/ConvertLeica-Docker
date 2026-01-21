@@ -1,6 +1,6 @@
 # Dockerfile for ConvertLeica-Docker
-# Base image with Python 3.12
-FROM python:3.12-slim
+# Base image with Python 3.13
+FROM python:3.13-slim
 
 # Set working directory
 WORKDIR /app
@@ -9,14 +9,14 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y libvips-dev && rm -rf /var/lib/apt/lists/*
 
 # Copy project files
-COPY requirements.txt /app/
+COPY requirements-docker.txt /app/
 COPY main.py leica_converter.py ci_leica_converters_helpers.py ci_leica_converters_single_lif.py ci_leica_converters_ometiff.py ci_leica_converters_ometiff_rgb.py ReadLeicaLIF.py ReadLeicaLOF.py ReadLeicaXLEF.py ParseLeicaImageXML.py ParseLeicaImageXMLLite.py /app/
 
 # Create and activate virtual environment, install dependencies
 RUN python -m venv /opt/venv \
     && . /opt/venv/bin/activate \
     && pip install --upgrade pip \
-    && pip install -r requirements.txt
+    && pip install -r requirements-docker.txt
 
 # Ensure venv is used for all future commands
 ENV PATH="/opt/venv/bin:$PATH"

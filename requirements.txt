@@ -1,4 +1,0 @@
-# lif environment requirements for ConvertLeica-Docker
-numpy==1.26.4
-pyvips==3.0.0
-opencv-python==4.9.0.80

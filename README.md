@@ -6,20 +6,32 @@ ConvertLeica-Docker is a toolset and web interface for converting Leica LIF, LOF
 
 ## Table of Contents
 
-- [Features](#features)
-- [Installation](#installation)
-- [Usage (Command Line)](#usage-command-line)
-  - [Inputs](#inputs)
-  - [Outputs](#outputs)
-  - [Function Output](#function-output-format)
-  - [Conversion Scenarios](#conversion-scenarios)
-  - [WSL/Windows Example Usage](#wslwindows-example-usage)
-- [Special Cases](#special-cases)
-- [Troubleshooting](#troubleshooting)
-- [License](#license)
-- [References](#references)
-- [More documentation](#more-documentation)
-- [LeicaViewerQT (basic)](#leicaviewerqt-basic)
+- [ConvertLeica-Docker](#convertleica-docker)
+  - [Table of Contents](#table-of-contents)
+  - [Features](#features)
+  - [Installation](#installation)
+    - [Requirements](#requirements)
+      - [Python packages](#python-packages)
+      - [libvips binaries (required for all platforms)](#libvips-binaries-required-for-all-platforms)
+        - [Linux](#linux)
+        - [macOS (not tested)](#macos-not-tested)
+        - [Windows](#windows)
+    - [(Optional) Build and run with Docker](#optional-build-and-run-with-docker)
+  - [Usage (Command Line)](#usage-command-line)
+    - [Basic Command](#basic-command)
+      - [Arguments](#arguments)
+    - [Inputs](#inputs)
+    - [Outputs](#outputs)
+    - [Function Output Format](#function-output-format)
+    - [Conversion Scenarios](#conversion-scenarios)
+    - [WSL/Windows Example Usage](#wslwindows-example-usage)
+  - [Special Cases](#special-cases)
+  - [Robust File Saving](#robust-file-saving)
+    - [Progress Indicators](#progress-indicators)
+  - [Troubleshooting](#troubleshooting)
+  - [License](#license)
+    - [References](#references)
+  - [More documentation](#more-documentation)
 
 ---
 
@@ -30,6 +42,8 @@ ConvertLeica-Docker is a toolset and web interface for converting Leica LIF, LOF
 - **Batch and single-image conversion**
 - **Web interface for browsing, previewing, and converting files**
 - **Progress reporting and metadata inspection**
+- **Robust file saving**: Uses a temp-first approach with automatic retry logic for reliable saving to network drives
+- **Dual progress bars**: Separate progress indicators for data processing and file saving phases
 
 ---
 
@@ -37,20 +51,35 @@ ConvertLeica-Docker is a toolset and web interface for converting Leica LIF, LOF
 
 ### Requirements
 
-- Python 3.12
+- Python 3.13
 - [pip](https://pip.pypa.io/en/stable/)
 - (Optional) Docker for containerized usage
 
-#### Python packages (see `requirements.txt`)
+#### Python packages
 
-- numpy==1.26.4
-- pyvips==3.0.0
-- opencv-python==4.9.0.80
+Different requirements files are provided for different scenarios:
+
+- `requirements-docker.txt` — Core dependencies for Docker container (numpy, pyvips, opencv-python)
+- `requirements-server.txt` — For running the web server (same core deps; server uses stdlib only)
+- `requirements-qt6ui.txt` — For running Qt6 desktop GUIs (core deps + PyQt6)
+
+Core packages (all scenarios):
+
+- numpy>=2.0.0
+- pyvips==3.1.1
+- opencv-python==4.13.0.90
 
 Install with:
 
 ```sh
-pip install -r requirements.txt
+# For Docker/CLI usage:
+pip install -r requirements-docker.txt
+
+# For web server:
+pip install -r requirements-server.txt
+
+# For Qt6 GUI applications:
+pip install -r requirements-qt6ui.txt
 ```
 
 #### libvips binaries (required for all platforms)
@@ -90,6 +119,16 @@ docker build -t convertleica-docker .
 # Run the container, mounting your data directory
 # (replace L:/data with your data path)
 docker run --rm -v "L:/data:/data" convertleica-docker --inputfile /data/myfile.lif --outputfolder /data/.processed
+
+# With custom temp folder (useful when output is on a slow network mount)
+docker run --rm \
+  -v "L:/data:/data" \
+  -v "/tmp/leica:/temp" \
+  convertleica-docker \
+  --inputfile /data/myfile.lif \
+  --outputfolder /data/.processed \
+  --tempfolder /temp \
+  --show_progress
 ```
 
 ---
@@ -109,6 +148,7 @@ python main.py --inputfile <path-to-LIF/LOF/XLEF> --outputfolder <output-folder>
 - `--image_uuid`: UUID of the image to extract (for multi-image files)
 - `--show_progress`: Show progress bar during conversion
 - `--altoutputfolder`: Optional second output directory
+- `--tempfolder`: Custom temp folder for intermediate files (useful for Docker or network scenarios). If not set, uses system temp directory.
 - `--xy_check_value`: XY size threshold for special handling (default: 3192)
 - `--get_image_metadata`: Also include full image metadata JSON in the result under `keyvalues.image_metadata_json`
 - `--get_image_xml`: Also include the raw image XML (when available) under `keyvalues.image_xml`
@@ -209,9 +249,35 @@ print(status)
 
 ---
 
+## Robust File Saving
+
+The converter uses a **temp-first approach** for reliable saving to network-mounted drives:
+
+1. **Save to temp**: The TIFF is first written to a local temp folder (system temp or custom `--tempfolder`)
+2. **Copy with verification**: The file is copied to the destination with size verification
+3. **Automatic retry**: On failure, retries up to 10 times with progressive backoff (1 min, 2 min, ... 10 min)
+4. **Alt folder support**: If `--altoutputfolder` is specified, the file is also copied there from temp
+5. **Cleanup**: The temp file is removed only after all copies succeed
+
+This prevents corrupted or partial files on unreliable network connections.
+
+### Progress Indicators
+
+When `--show_progress` is enabled, two distinct progress bars are shown:
+
+```
+Converting to OME-TIFF: |██████████████████████████████████████████████████| 100.0% Processing complete
+  Saving: <▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓> 100.0% - Copying to output
+```
+
+- **Processing bar** (`|███|`): Data reading, stitching, and pyvips image creation (0-100%)
+- **Saving bar** (`<▓▓▓>`): TIFF writing and file copying phases (0-100%)
+
+---
+
 ## Troubleshooting
 
-- Ensure all dependencies are installed (`pip install -r requirements.txt`)
+- Ensure all dependencies are installed (`pip install -r requirements-docker.txt` for CLI/Docker)
 - For Docker, ensure your data directory is mounted correctly
 - For large files, ensure sufficient disk space and memory
 - If you encounter errors, check the console output for details

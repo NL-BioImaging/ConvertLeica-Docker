@@ -46,6 +46,9 @@ fields. If offline, callers can ignore `metadata_schema` and skip validation.
 import os
 import json
 import tempfile
+import shutil
+import time
+import uuid as uuid_module
 import numpy as np
 import xml.etree.ElementTree as ET
 import urllib.request
@@ -376,27 +379,247 @@ def _scale_display_values(values, bits_per_ch: List[int], container_max_val: int
     return out
 
 
+# Global timer tracking for progress bars
+_progress_start_times = {}  # Dict to track start times by prefix/phase
+_total_process_start_time = None  # Track overall process start
+
+
+def format_elapsed_time(seconds: float) -> str:
+    """Format elapsed seconds into a human-readable string."""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    elif seconds < 3600:
+        mins = int(seconds // 60)
+        secs = seconds % 60
+        return f"{mins}m {secs:.1f}s"
+    else:
+        hours = int(seconds // 3600)
+        mins = int((seconds % 3600) // 60)
+        secs = seconds % 60
+        return f"{hours}h {mins}m {secs:.0f}s"
+
+
+def start_progress_timer(phase: str = "default") -> None:
+    """Start a timer for a specific progress phase."""
+    global _progress_start_times, _total_process_start_time
+    _progress_start_times[phase] = time.time()
+    if _total_process_start_time is None:
+        _total_process_start_time = time.time()
+
+
+def get_elapsed_time(phase: str = "default") -> float:
+    """Get elapsed seconds for a specific phase."""
+    if phase in _progress_start_times:
+        return time.time() - _progress_start_times[phase]
+    return 0.0
+
+
+def get_total_elapsed_time() -> float:
+    """Get total elapsed seconds since first timer started."""
+    global _total_process_start_time
+    if _total_process_start_time is not None:
+        return time.time() - _total_process_start_time
+    return 0.0
+
+
+def reset_progress_timers() -> None:
+    """Reset all progress timers."""
+    global _progress_start_times, _total_process_start_time
+    _progress_start_times = {}
+    _total_process_start_time = None
+
+
+# Consistent prefix width for aligned progress bars
+# Based on longest prefix: "Converting RGB to OME-TIFF:" = 27 chars
+PROGRESS_PREFIX_WIDTH = 27
+
+# Minimum suffix padding to ensure previous line content is cleared
+MIN_SUFFIX_WIDTH = 20
+
+
 def print_progress_bar(progress: float, *, total: float = 100.0, prefix: str = "Progress:",
-                       suffix: str = "Complete", length: int = 50, fill: str = "█",
-                       final_call: bool = False) -> None:
+                       suffix: str = "Complete", length: int = 40, fill: str = "█",
+                       final_call: bool = False, phase: str = None) -> None:
     """Draw an in-place ASCII progress bar."""
     global _max_suffix_len  # pylint: disable=global-statement
 
     if "_max_suffix_len" not in globals():
         _max_suffix_len = 0
 
+    # Auto-start timer on first call for this phase
+    timer_phase = phase if phase else prefix
+    if timer_phase not in _progress_start_times and progress < total:
+        start_progress_timer(timer_phase)
+
     progress = min(progress, total)
-    _max_suffix_len = max(_max_suffix_len, len(suffix))
+    _max_suffix_len = max(_max_suffix_len, len(suffix), MIN_SUFFIX_WIDTH)
     padded_suffix = suffix.ljust(_max_suffix_len)
+    padded_prefix = prefix.ljust(PROGRESS_PREFIX_WIDTH)
 
     percent = progress / total
     filled = int(length * percent)
     bar = fill * filled + "-" * (length - filled)
-    print(f"\r{prefix} |{bar}| {percent:.1%} {padded_suffix}", end="", flush=True)
+    print(f"\r  {padded_prefix} |{bar}| {percent:.1%} {padded_suffix}", end="", flush=True)
 
     if final_call:
-        print()
+        elapsed = get_elapsed_time(timer_phase)
+        print(f" [{format_elapsed_time(elapsed)}]")
         _max_suffix_len = 0
+
+
+# Track suffix length separately for save progress bar
+_save_max_suffix_len = 0
+
+def print_save_progress_bar(progress: float, *, total: float = 100.0, prefix: str = "Saving:",
+                            suffix: str = "Complete", length: int = 40, fill: str = "▓",
+                            empty: str = "░", final_call: bool = False, phase: str = None) -> None:
+    """Draw an in-place ASCII progress bar with distinct style for save operations.
+    
+    Uses a different fill character and format to visually distinguish from the 
+    main conversion progress bar.
+    """
+    global _save_max_suffix_len  # pylint: disable=global-statement
+
+    # Auto-start timer on first call for this phase
+    timer_phase = phase if phase else prefix
+    if timer_phase not in _progress_start_times and progress < total:
+        start_progress_timer(timer_phase)
+
+    progress = min(progress, total)
+    _save_max_suffix_len = max(_save_max_suffix_len, len(suffix), MIN_SUFFIX_WIDTH)
+    padded_suffix = suffix.ljust(_save_max_suffix_len)
+    padded_prefix = prefix.ljust(PROGRESS_PREFIX_WIDTH)
+
+    percent = progress / total
+    filled = int(length * percent)
+    bar = fill * filled + empty * (length - filled)
+    # Use a distinct format: angle brackets and different structure
+    print(f"\r  {padded_prefix} <{bar}> {percent:.1%} - {padded_suffix}", end="", flush=True)
+
+    if final_call:
+        elapsed = get_elapsed_time(timer_phase)
+        print(f" [{format_elapsed_time(elapsed)}]")
+        _save_max_suffix_len = 0
+
+
+# Track suffix length for copy progress bar
+_copy_max_suffix_len = 0
+
+def print_copy_progress_bar(progress: float, *, total: float = 100.0, prefix: str = "Copying:",
+                            suffix: str = "Complete", length: int = 40, fill: str = "▒",
+                            empty: str = "░", final_call: bool = False, phase: str = None) -> None:
+    """Draw an in-place ASCII progress bar for file copy operations.
+    
+    Uses a different fill character to visually distinguish from save and conversion bars.
+    """
+    global _copy_max_suffix_len  # pylint: disable=global-statement
+
+    # Auto-start timer on first call for this phase
+    timer_phase = phase if phase else prefix
+    if timer_phase not in _progress_start_times and progress < total:
+        start_progress_timer(timer_phase)
+
+    progress = min(progress, total)
+    _copy_max_suffix_len = max(_copy_max_suffix_len, len(suffix), MIN_SUFFIX_WIDTH)
+    padded_suffix = suffix.ljust(_copy_max_suffix_len)
+    padded_prefix = prefix.ljust(PROGRESS_PREFIX_WIDTH)
+
+    percent = progress / total
+    filled = int(length * percent)
+    bar = fill * filled + empty * (length - filled)
+    # Use curly brackets for copy operations
+    print(f"\r  {padded_prefix} {{{bar}}} {percent:.1%} - {padded_suffix}", end="", flush=True)
+
+    if final_call:
+        elapsed = get_elapsed_time(timer_phase)
+        print(f" [{format_elapsed_time(elapsed)}]")
+        _copy_max_suffix_len = 0
+
+
+# Buffer size for file copy with progress (4MB chunks for good performance)
+COPY_BUFFER_SIZE = 4 * 1024 * 1024
+
+
+def copy_file_with_progress(
+    src_path: str,
+    dest_path: str,
+    show_progress: bool = False,
+    prefix: str = "Copying source:",
+    buffer_size: int = COPY_BUFFER_SIZE
+) -> bool:
+    """
+    Copy a file with progress bar display.
+    
+    Uses chunked reading/writing to show progress during potentially long copies
+    from network locations.
+    
+    Parameters:
+    - src_path: Source file path
+    - dest_path: Destination file path
+    - show_progress: If True, display progress bar
+    - prefix: Prefix text for progress bar
+    - buffer_size: Size of chunks to copy at a time (default 4MB)
+    
+    Returns:
+    - True on success
+    
+    Raises:
+    - OSError/IOError on failure
+    """
+    src_size = os.path.getsize(src_path)
+    
+    # Ensure destination directory exists
+    dest_dir = os.path.dirname(dest_path)
+    if dest_dir:
+        os.makedirs(dest_dir, exist_ok=True)
+    
+    # Remove existing destination if present
+    if os.path.exists(dest_path):
+        try:
+            os.remove(dest_path)
+        except OSError:
+            pass
+    
+    copied = 0
+    last_percent = -1
+    
+    with open(src_path, 'rb') as fsrc:
+        with open(dest_path, 'wb') as fdest:
+            while True:
+                buf = fsrc.read(buffer_size)
+                if not buf:
+                    break
+                fdest.write(buf)
+                copied += len(buf)
+                
+                if show_progress and src_size > 0:
+                    percent = int(100 * copied / src_size)
+                    # Update every 2% to avoid too many updates
+                    if percent >= last_percent + 2 or copied >= src_size:
+                        last_percent = percent
+                        # Format size nicely
+                        if src_size >= 1024 * 1024 * 1024:
+                            size_str = f"{copied / (1024*1024*1024):.1f}/{src_size / (1024*1024*1024):.1f} GB"
+                        elif src_size >= 1024 * 1024:
+                            size_str = f"{copied / (1024*1024):.0f}/{src_size / (1024*1024):.0f} MB"
+                        else:
+                            size_str = f"{copied / 1024:.0f}/{src_size / 1024:.0f} KB"
+                        
+                        is_final = copied >= src_size
+                        print_copy_progress_bar(
+                            percent, prefix=prefix, suffix=size_str, 
+                            final_call=is_final, phase=prefix
+                        )
+    
+    # Copy file metadata (permissions, times)
+    shutil.copystat(src_path, dest_path)
+    
+    # Verify size
+    dest_size = os.path.getsize(dest_path)
+    if dest_size != src_size:
+        raise OSError(f"Size mismatch after copy: source={src_size}, dest={dest_size}")
+    
+    return True
 
 
 def _find_image_hierarchical_path(xlef_path, image_uuid):
@@ -708,6 +931,370 @@ def validate_metadata(value: str, field: str, schema: dict) -> str:
         if cleaned == canonical.lower():
             return canonical
     return "Other"
+
+
+# -----------------------------------------------------------------------------
+# Robust file copy with size verification and retry logic
+# -----------------------------------------------------------------------------
+
+def robust_file_copy(src_path: str, dest_path: str, max_retries: int = 10,
+                     show_progress: bool = False, prefix: str = "Copying output:",
+                     buffer_size: int = COPY_BUFFER_SIZE) -> bool:
+    """
+    Copy a file from src_path to dest_path with size verification, retry logic,
+    and optional progress display.
+    
+    On failure, retries up to max_retries times with progressive backoff:
+    - Retry 1: wait 1 minute
+    - Retry 2: wait 2 minutes after retry 1
+    - Retry N: wait N minutes after retry N-1
+    
+    Parameters:
+    - src_path: Source file path (should be a local file)
+    - dest_path: Destination file path (may be on a network drive)
+    - max_retries: Maximum number of retry attempts (default: 10)
+    - show_progress: If True, display progress bar during copy
+    - prefix: Prefix text for progress bar
+    - buffer_size: Size of chunks to copy at a time (default 4MB)
+    
+    Returns:
+    - True on success
+    
+    Raises:
+    - OSError: If all retries are exhausted
+    """
+    src_size = os.path.getsize(src_path)
+    
+    for attempt in range(max_retries + 1):
+        try:
+            # Ensure destination directory exists
+            dest_dir = os.path.dirname(dest_path)
+            if dest_dir:
+                os.makedirs(dest_dir, exist_ok=True)
+            
+            # Remove destination if it exists (partial copy from previous attempt)
+            if os.path.exists(dest_path):
+                try:
+                    os.remove(dest_path)
+                except OSError:
+                    pass  # Will fail on copy if still locked
+            
+            # Copy the file with optional progress display
+            copied = 0
+            last_percent = -1
+            
+            with open(src_path, 'rb') as fsrc:
+                with open(dest_path, 'wb') as fdest:
+                    while True:
+                        buf = fsrc.read(buffer_size)
+                        if not buf:
+                            break
+                        fdest.write(buf)
+                        copied += len(buf)
+                        
+                        if show_progress and src_size > 0:
+                            percent = int(100 * copied / src_size)
+                            # Update every 2% to avoid too many updates
+                            if percent >= last_percent + 2 or copied >= src_size:
+                                last_percent = percent
+                                # Format size nicely
+                                if src_size >= 1024 * 1024 * 1024:
+                                    size_str = f"{copied / (1024*1024*1024):.1f}/{src_size / (1024*1024*1024):.1f} GB"
+                                elif src_size >= 1024 * 1024:
+                                    size_str = f"{copied / (1024*1024):.0f}/{src_size / (1024*1024):.0f} MB"
+                                else:
+                                    size_str = f"{copied / 1024:.0f}/{src_size / 1024:.0f} KB"
+                                
+                                is_final = copied >= src_size
+                                print_copy_progress_bar(
+                                    percent, prefix=prefix, suffix=size_str, 
+                                    final_call=is_final, phase=prefix
+                                )
+            
+            # Copy file metadata (permissions, times)
+            shutil.copystat(src_path, dest_path)
+            
+            # Verify by size comparison
+            if os.path.exists(dest_path):
+                dest_size = os.path.getsize(dest_path)
+                if dest_size == src_size:
+                    return True
+                else:
+                    raise OSError(f"Size mismatch: source={src_size}, dest={dest_size}")
+            else:
+                raise OSError("Destination file does not exist after copy")
+                
+        except (OSError, IOError, shutil.Error) as e:
+            if attempt < max_retries:
+                wait_minutes = attempt + 1
+                print(f"\nWarning: Copy attempt {attempt + 1} failed: {e}")
+                print(f"  Retrying in {wait_minutes} minute(s)... ({max_retries - attempt} retries remaining)")
+                time.sleep(wait_minutes * 60)
+            else:
+                raise OSError(
+                    f"Failed to copy file after {max_retries + 1} attempts. "
+                    f"Source: {src_path}, Destination: {dest_path}. Last error: {e}"
+                )
+    
+    # Should not reach here, but just in case
+    return False
+
+
+def safe_tiffsave(img, out_path: str, altoutputfolder: str | None = None,
+                  show_progress: bool = False, progress_callback: callable = None,
+                  tempfolder: str | None = None,
+                  **tiffsave_kwargs) -> str:
+    """
+    Save a pyvips image to a TIFF file using a temp-first approach for reliability.
+    
+    This function:
+    1. Saves the image to a temporary file in the system temp directory (or custom tempfolder)
+    2. Copies the temp file to out_path with verification and retry logic
+    3. If altoutputfolder is provided, copies temp file there too
+    4. Removes the temp file only after all copies are verified
+    
+    Parameters:
+    - img: pyvips.Image object to save
+    - out_path: Final destination path for the TIFF file
+    - altoutputfolder: Optional alternative output folder for a second copy
+    - show_progress: If True, display console progress bar during save
+    - progress_callback: Optional callable(phase: str, percent: float) for programmatic progress
+                        phase is one of: "writing", "copying", "copying_alt"
+    - tempfolder: Optional custom temp folder path. If None, uses system temp directory.
+    - **tiffsave_kwargs: Additional arguments passed to img.tiffsave()
+    
+    Returns:
+    - The filename (basename) of the saved file
+    
+    Raises:
+    - Various exceptions if saving or copying fails after all retries
+    """
+    # Generate a unique temp file path in system temp directory or custom tempfolder
+    temp_dir = tempfolder if tempfolder else tempfile.gettempdir()
+    # Ensure temp directory exists
+    os.makedirs(temp_dir, exist_ok=True)
+    temp_filename = f"{uuid_module.uuid4()}.tmp.tiff"
+    temp_path = os.path.join(temp_dir, temp_filename)
+    
+    ome_name = os.path.basename(out_path)
+    has_alt = altoutputfolder is not None
+    
+    # Progress tracking for pyvips signals
+    last_reported_percent = [-1]  # Use list to allow modification in nested function
+    saving_completed = [False]  # Track if we've already printed the final saving line
+    
+    def _report_progress(phase: str, percent: float):
+        """Internal helper to report progress via both callback and console."""
+        if progress_callback is not None:
+            try:
+                progress_callback(phase, percent)
+            except Exception:
+                pass  # Don't let callback errors break the save
+        
+        if show_progress and phase == "writing":
+            # Only show the Saving progress bar for the writing phase
+            # Copying phases have their own progress bars via robust_file_copy
+            is_final = percent >= 100 and not saving_completed[0]
+            print_save_progress_bar(percent, prefix="Saving:", suffix="Writing TIFF", final_call=is_final)
+            if is_final:
+                saving_completed[0] = True
+    
+    try:
+        # Set up pyvips progress reporting
+        def on_eval(image, progress):
+            # Only report every 2% to avoid too many updates, and skip if already completed
+            if saving_completed[0]:
+                return
+            current_percent = int(progress.percent)
+            if current_percent >= last_reported_percent[0] + 2 or current_percent >= 100:
+                last_reported_percent[0] = current_percent
+                _report_progress("writing", progress.percent)
+        
+        img.set_progress(True)
+        img.signal_connect("eval", on_eval)
+        
+        if show_progress:
+            _report_progress("writing", 0)
+        
+        # Save to temp location first
+        img.tiffsave(temp_path, **tiffsave_kwargs)
+        
+        # Ensure 100% is reported for writing phase (only if not already done by callback)
+        if not saving_completed[0]:
+            _report_progress("writing", 100)
+        
+        # Verify temp file was created
+        if not os.path.exists(temp_path):
+            raise OSError(f"Temp file was not created: {temp_path}")
+        
+        temp_size = os.path.getsize(temp_path)
+        if temp_size == 0:
+            raise OSError(f"Temp file is empty: {temp_path}")
+        
+        # Copy to primary destination with retry logic and progress display
+        robust_file_copy(temp_path, out_path, show_progress=show_progress, 
+                        prefix="Copying output:")
+        
+        # Copy to alternative destination if specified
+        if altoutputfolder:
+            alt_out_path = os.path.join(altoutputfolder, ome_name)
+            robust_file_copy(temp_path, alt_out_path, show_progress=show_progress,
+                           prefix="Copying alt output:")
+        
+        # Print total elapsed time if we were showing progress
+        if show_progress:
+            total_elapsed = get_total_elapsed_time()
+            print(f"  Total time: {format_elapsed_time(total_elapsed)}")
+        
+        return ome_name
+        
+    finally:
+        # Clean up temp file
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+                if show_progress:
+                    print(f"  Cleaned up temp output file")
+            except OSError as e:
+                print(f"\nWarning: Could not remove temporary TIFF file {temp_path}: {e}")
+
+
+# -----------------------------------------------------------------------------
+# Robust source file reading - copy source to temp before processing
+# -----------------------------------------------------------------------------
+
+def prepare_temp_source(
+    inputfile: str,
+    image_uuid: str,
+    metadata: dict,
+    tempfolder: str | None = None,
+    show_progress: bool = False,
+    max_retries: int = 10
+) -> tuple[str, int, str | None]:
+    """
+    Prepare a local temp copy of the source data for robust reading from network files.
+    
+    For LOF files: copies the entire file to temp folder.
+    For LIF files: extracts the single image to a temp LIF file using existing singlelif code.
+    
+    Parameters:
+    - inputfile: Original source file path (.lif, .lof, .xlef)
+    - image_uuid: UUID of the image to extract (for LIF files)
+    - metadata: Pre-read metadata dict containing filetype, LIFFile, LOFFilePath, Position, etc.
+    - tempfolder: Optional custom temp folder. If None, uses system temp.
+    - show_progress: If True, display progress during copy
+    - max_retries: Maximum retry attempts for file operations
+    
+    Returns:
+    - Tuple of (temp_file_path, base_position, cleanup_path)
+      - temp_file_path: Path to the temp file to read from
+      - base_position: Byte position offset for reading (62 for LOF-style, or from metadata for LIF)
+      - cleanup_path: Path to remove after processing (may differ for LIF extraction)
+    
+    Raises:
+    - OSError: If copy/extraction fails after all retries
+    """
+    # Import here to avoid circular imports
+    try:
+        from .ci_leica_converters_single_lif import convert_leica_to_singlelif_temp
+    except ImportError:
+        from ci_leica_converters_single_lif import convert_leica_to_singlelif_temp
+    
+    temp_dir = tempfolder if tempfolder else tempfile.gettempdir()
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    filetype = metadata.get("filetype", "").lower()
+    
+    if filetype in [".lof", ".xlef"]:
+        # For LOF/XLEF: copy the entire LOF file to temp
+        source_file = metadata.get("LOFFilePath")
+        if not source_file or not os.path.exists(source_file):
+            raise FileNotFoundError(f"LOF source file not found: {source_file}")
+        
+        # Generate unique temp filename
+        temp_filename = f"{uuid_module.uuid4()}.tmp.lof"
+        temp_path = os.path.join(temp_dir, temp_filename)
+        
+        # Use robust copy with progress and retry logic
+        src_size = os.path.getsize(source_file)
+        
+        for attempt in range(max_retries + 1):
+            try:
+                # Use copy with progress bar
+                copy_file_with_progress(
+                    source_file, temp_path,
+                    show_progress=show_progress,
+                    prefix="Copying source:"
+                )
+                
+                # Verify is done inside copy_file_with_progress, but double-check
+                if os.path.exists(temp_path):
+                    dest_size = os.path.getsize(temp_path)
+                    if dest_size == src_size:
+                        # LOF data starts at position 62
+                        return (temp_path, 62, temp_path)
+                    else:
+                        raise OSError(f"Size mismatch: source={src_size}, temp={dest_size}")
+                else:
+                    raise OSError("Temp file does not exist after copy")
+                    
+            except (OSError, IOError, shutil.Error) as e:
+                if attempt < max_retries:
+                    wait_minutes = attempt + 1
+                    if show_progress:
+                        print(f"\nWarning: Source copy attempt {attempt + 1} failed: {e}")
+                        print(f"  Retrying in {wait_minutes} minute(s)...")
+                    time.sleep(wait_minutes * 60)
+                else:
+                    # Clean up partial temp file if exists
+                    if os.path.exists(temp_path):
+                        try:
+                            os.remove(temp_path)
+                        except OSError:
+                            pass
+                    raise OSError(
+                        f"Failed to copy source file after {max_retries + 1} attempts. "
+                        f"Source: {source_file}. Last error: {e}"
+                    )
+    
+    elif filetype == ".lif":
+        # For LIF: extract single image to temp LIF file
+        source_file = metadata.get("LIFFile")
+        if not source_file or not os.path.exists(source_file):
+            raise FileNotFoundError(f"LIF source file not found: {source_file}")
+        
+        # Extract to temp folder - returns (temp_lif_path, new_position)
+        # The singlelif_temp function has its own progress bar
+        temp_lif_path, new_position = convert_leica_to_singlelif_temp(
+            inputfile=source_file,
+            image_uuid=image_uuid,
+            tempfolder=temp_dir,
+            show_progress=show_progress,
+            max_retries=max_retries
+        )
+        
+        return (temp_lif_path, new_position, temp_lif_path)
+    
+    else:
+        raise ValueError(f"Unsupported filetype for temp source preparation: {filetype}")
+
+
+def cleanup_temp_source(cleanup_path: str | None, show_progress: bool = False) -> None:
+    """
+    Remove a temporary source file created by prepare_temp_source.
+    
+    Parameters:
+    - cleanup_path: Path to the temp file to remove (or None to skip)
+    - show_progress: If True, print cleanup messages
+    """
+    if cleanup_path and os.path.exists(cleanup_path):
+        try:
+            os.remove(cleanup_path)
+            if show_progress:
+                print(f"  Cleaned up temp source file")
+        except OSError as e:
+            print(f"\nWarning: Could not remove temp source file {cleanup_path}: {e}")
+
 
 xsd_url = "http://www.openmicroscopy.org/Schemas/OME/2016-06/ome.xsd"
 metadata_schema = parse_ome_xsd(xsd_url)

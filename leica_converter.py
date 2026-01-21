@@ -16,6 +16,7 @@ def convert_leica(
     xy_check_value: int = 3192,
     get_image_metadata: bool = False,
     get_image_xml: bool = False,
+    tempfolder: str | None = None,
 ):
     """
     Converts Leica LIF, LOF, or XLEF files to OME-TIFF, .LOF, or single-image .LIF based on metadata and specific rules.
@@ -29,6 +30,7 @@ def convert_leica(
         xy_check_value (int, optional): Threshold for XY dimensions to determine conversion type. Defaults to 3192.
         get_image_metadata (bool, optional): When True, include full image metadata JSON under keyvalues.image_metadata_json. Defaults to False.
         get_image_xml (bool, optional): When True, include raw image XML string under keyvalues.image_xml (empty if unavailable). Defaults to False.
+        tempfolder (str, optional): Custom temp folder for intermediate files. If None, uses system temp directory. Defaults to None.
 
     Returns:
         str: JSON array string with conversion results. Each element is a dict with keys:
@@ -121,7 +123,8 @@ def convert_leica(
                         image_uuid=image_uuid,
                         outputfolder=outputfolder,
                         show_progress=show_progress,
-                        altoutputfolder=altoutputfolder
+                        altoutputfolder=altoutputfolder,
+                        tempfolder=tempfolder
                     )
                 else:
                     if show_progress: print(f"  Detected (Multi/Single) Channel LIF. Calling convert_leica_to_ometiff...")
@@ -130,7 +133,8 @@ def convert_leica(
                         image_uuid=image_uuid,
                         outputfolder=outputfolder,
                         show_progress=show_progress,
-                        altoutputfolder=altoutputfolder
+                        altoutputfolder=altoutputfolder,
+                        tempfolder=tempfolder
                     )
                 if created_filename:
                     stats = compute_channel_intensity_stats(metadata, sample_fraction=0.1, use_memmap=True)
@@ -207,7 +211,8 @@ def convert_leica(
                         image_uuid=image_uuid,
                         outputfolder=outputfolder,
                         show_progress=show_progress,
-                        altoutputfolder=altoutputfolder
+                        altoutputfolder=altoutputfolder,
+                        tempfolder=tempfolder
                     )
                 else:
                     if show_progress: print(f"  Calling convert_leica_to_ometiff...")
@@ -216,7 +221,8 @@ def convert_leica(
                         image_uuid=image_uuid,
                         outputfolder=outputfolder,
                         show_progress=show_progress,
-                        altoutputfolder=altoutputfolder
+                        altoutputfolder=altoutputfolder,
+                        tempfolder=tempfolder
                     )
                 if created_filename:
                     stats = compute_channel_intensity_stats(metadata, sample_fraction=0.1, use_memmap=True)

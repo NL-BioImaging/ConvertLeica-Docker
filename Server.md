@@ -2,6 +2,16 @@
 
 This document explains how the web server and single-page client work together, with a deep dive on the progressive preview generation and disk caching pipeline.
 
+## Requirements
+
+Install with:
+
+```sh
+pip install -r requirements-server.txt
+```
+
+The server uses the same core dependencies as the converter (numpy, pyvips, opencv-python). All HTTP/server functionality uses Python standard library modules only.
+
 ## Overview
 
 - server.py: A small HTTP server exposing JSON API endpoints and serving static files (index.html, style.css, preview.png).
@@ -99,6 +109,26 @@ This approach yields a snappy UX:
 
 - Cache key uniqueness depends on metadata UniqueID; if not stable, multiple previews could collide or fail to reuse.
 - To clear cache: exit the server and delete %TEMP%/leica_preview_cache.
+
+## Robust file saving during conversion
+
+The converter uses a **temp-first approach** when saving OME-TIFF files for reliability on network drives:
+
+1. **Temp save**: The TIFF is written to the system temp directory first
+2. **Verified copy**: The file is copied to the output folder with size verification
+3. **Retry logic**: On copy failure, retries up to 10 times with progressive backoff (1 min, 2 min, ... 10 min)
+4. **Cleanup**: Temp file is removed only after successful copy
+
+This prevents corrupted files when the output folder is on an unreliable network mount.
+
+### Progress reporting
+
+With `--show_progress`, two progress bars are displayed during conversion:
+
+- **Processing bar** (`|███|`): Reading data, stitching tiles, creating pyvips image (0-100%)
+- **Saving bar** (`<▓▓▓>`): Writing TIFF to temp, copying to output (0-100%)
+
+The SSE stream from `/api/convert_leica` includes both progress bars in the streamed output.
 
 ## Browsing, breadcrumbs, and folder_uuid
 

@@ -16,6 +16,7 @@
 % docker run --rm -v "/mnt/data":/data -v "/mnt/data/.processed":/out -v "/mnt/data/out":/outalt convertleica-docker --inputfile /data/MultiChannel.lif --image_uuid cc1967e9-6de7-11f0-bed3-80e82ce1e716 --outputfolder "/out" --altoutputfolder "/outalt" --show_progress
 % docker run --rm -v "/mnt/data":/data -v "/mnt/data/.processed":/out -v "/mnt/data/out":/outalt convertleica-docker --inputfile /data/TileScan_Large_Merged.lof --outputfolder "/out" --altoutputfolder "/outalt" --show_progress
 % docker run --rm -v "/mnt/data":/data -v "/mnt/data/.processed":/out -v "/mnt/data/out":/outalt convertleica-docker --inputfile /data/MultiChannel/MultiChannel.xlef --image_uuid cc1967e9-6de7-11f0-bed3-80e82ce1e716 --outputfolder "/out" --altoutputfolder "/outalt" --show_progress
+% docker run --rm -v "/mnt/data":/data -v "/mnt/data/.processed":/out -v "/mnt/data/out":/outalt convertleica-docker --inputfile "/data/Slide 3-Mosaic001_ICC_Merged.lof" --outputfolder "/out" --altoutputfolder "/outalt" --show_progress
 % TileScan_Small_Merged
 % docker run --rm -v "/mnt/data":/data -v "/mnt/data/.processed":/out -v "/mnt/data/out":/outalt convertleica-docker --inputfile /data/MultiChannel.lif --image_uuid 00d5c2c9-6de8-11f0-bed3-80e82ce1e716 --outputfolder "/out" --altoutputfolder "/outalt" --show_progress
 % docker run --rm -v "/mnt/data":/data -v "/mnt/data/.processed":/out -v "/mnt/data/out":/outalt convertleica-docker --inputfile /data/TileScan_Small_Merged.lof --outputfolder "/out" --altoutputfolder "/outalt" --show_progress
