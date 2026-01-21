@@ -282,9 +282,10 @@ def compute_channel_intensity_stats(metadata: dict, sample_fraction: float = 0.1
         # If anything fails, fall back to display-only values
         return _fallback_only_display(metadata)
 
-    # Display black/white values scaled to container per channel
-    black_vals = _scale_display_values(metadata.get("blackvalue"), bits_per_ch, container_max_val, channels)
-    white_vals = _scale_display_values(metadata.get("whitevalue"), bits_per_ch, container_max_val, channels)
+    # Display black/white values scaled to significant bits (channelResolution) per channel
+    channel_resolution = metadata.get("channelResolution", [16] * channels)
+    black_vals = _scale_display_values(metadata.get("blackvalue"), channel_resolution, channels)
+    white_vals = _scale_display_values(metadata.get("whitevalue"), channel_resolution, channels)
 
     return {
         "channel_mins": ch_mins,
@@ -326,10 +327,12 @@ def _read_rows_strided(file_name: str, offset: int, ys: int, xs: int, chans: int
 def _fallback_only_display(meta: dict) -> Dict[str, List[int]]:
     channels = 3 if meta.get("isrgb") else int(meta.get("channels", 1) or 1)
     bits_per_ch = _resolve_bits_per_channel(meta, channels, bool(meta.get("isrgb", False)))
-    # Use container from first channel
+    # Use container from first channel for min/max range
     _, _, container_max_val = _dtype_from_bits(bits_per_ch[0])
-    black_vals = _scale_display_values(meta.get("blackvalue"), bits_per_ch, container_max_val, channels)
-    white_vals = _scale_display_values(meta.get("whitevalue"), bits_per_ch, container_max_val, channels)
+    # Use channelResolution (significant bits) for display values scaling
+    channel_resolution = meta.get("channelResolution", [16] * channels)
+    black_vals = _scale_display_values(meta.get("blackvalue"), channel_resolution, channels)
+    white_vals = _scale_display_values(meta.get("whitevalue"), channel_resolution, channels)
     return {
         "channel_mins": [0] * channels,
         "channel_maxs": [container_max_val] * channels,
@@ -338,11 +341,14 @@ def _fallback_only_display(meta: dict) -> Dict[str, List[int]]:
     }
 
 
-def _scale_display_values(values, bits_per_ch: List[int], container_max_val: int, channels: int) -> List[int]:
-    """Scale viewer black/white values (often 0..1 floats) to container integer range per channel.
+def _scale_display_values(values, channel_resolution: List[int], channels: int) -> List[int]:
+    """Scale viewer black/white values (often 0..1 floats) to significant bits range per channel.
+
+    Uses channelResolution (significant bits, e.g., 12) to compute the max value (e.g., 4095),
+    not the container bits (8 or 16).
 
     If `values` length mismatches `channels`, pad/repeat as needed.
-    If values seem already in container range (>1), clamp and cast.
+    If values seem already in integer range (>1), clamp and cast.
     """
     # Normalize input list length
     if isinstance(values, list) and values:
@@ -362,6 +368,18 @@ def _scale_display_values(values, bits_per_ch: List[int], container_max_val: int
     else:
         vals = vals[:channels]
 
+    # Normalize channel_resolution list
+    if isinstance(channel_resolution, list) and channel_resolution:
+        ch_res = channel_resolution[:]
+    else:
+        ch_res = [16] * channels  # Default to 16-bit if not provided
+    
+    # Pad or trim channel_resolution to match channels
+    if len(ch_res) < channels:
+        ch_res = ch_res + [ch_res[-1] if ch_res else 16] * (channels - len(ch_res))
+    else:
+        ch_res = ch_res[:channels]
+
     out: List[int] = []
     for i in range(channels):
         v = vals[i]
@@ -369,13 +387,17 @@ def _scale_display_values(values, bits_per_ch: List[int], container_max_val: int
             v = float(v)
         except Exception:
             v = 0.0
-        # If already in integer range, clamp to container
+        
+        # Get max value from significant bits (channelResolution)
+        sig_bits = ch_res[i] if ch_res[i] is not None else 16
+        sig_max_val = (1 << sig_bits) - 1  # e.g., 12 bits -> 4095
+        
+        # If already in integer range, clamp to significant bits max
         if v > 1.0:
-            out.append(int(max(0, min(container_max_val, round(v)))))
+            out.append(int(max(0, min(sig_max_val, round(v)))))
         else:
-            # Assume normalized [0,1] -> scale to container of that channel
-            # Some channels might have different significant bits, but container is uniform
-            out.append(int(max(0, min(container_max_val, round(v * container_max_val)))))
+            # Assume normalized [0,1] -> scale to significant bits range
+            out.append(int(max(0, min(sig_max_val, round(v * sig_max_val)))))
     return out
 
 
