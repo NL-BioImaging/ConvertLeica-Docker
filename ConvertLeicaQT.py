@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QListWidget, QListWidgetItem, QLabel, QFileDialog, QTextEdit, QSplitter,
     QSizePolicy, QLineEdit, QMessageBox, QDialog, QDialogButtonBox, QTextBrowser,
-    QTreeWidget, QTreeWidgetItem, QStyle, QCheckBox, QSpinBox
+    QTreeWidget, QTreeWidgetItem, QStyle, QCheckBox, QSpinBox, QProgressBar
 )
 from PyQt6.QtGui import QIcon, QPixmap, QPalette, QColor
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
@@ -32,6 +32,56 @@ from ci_leica_converters_helpers import read_leica_file, get_image_metadata, get
 from CreatePreview import create_preview_image
 from leica_converter import convert_leica
 import tempfile
+import re
+
+
+# ----------------------------- Progress Parsing Utilities -----------------------------
+def parse_progress_text(text: str) -> dict | None:
+    """
+    Parse progress bar text to extract percentage and phase information.
+    
+    Returns dict with keys: 'percent', 'phase', 'suffix' or None if not a progress line.
+    
+    Handles formats like:
+    - 'Converting to OME-TIFF: |████----| 45.0% Finished T=5/10 C=1/1 Z=1/1'
+    - 'Copying source: {▒▒░░} 25.0% - 100/400 MB'
+    - 'Saving: <▓▓░░> 50.0% - Writing TIFF'
+    """
+    if not text:
+        return None
+    
+    # Match percentage patterns: XX.X% or XX%
+    percent_match = re.search(r'(\d+(?:\.\d+)?)%', text)
+    if not percent_match:
+        return None
+    
+    try:
+        percent = float(percent_match.group(1))
+    except ValueError:
+        return None
+    
+    # Determine phase from prefix (before the progress bar)
+    phase = 'Converting'
+    text_lower = text.lower()
+    if 'copying source' in text_lower or 'copying output' in text_lower:
+        phase = 'Copying'
+    elif 'saving' in text_lower:
+        phase = 'Saving'
+    elif 'converting' in text_lower:
+        if 'rgb' in text_lower:
+            phase = 'Converting RGB'
+        else:
+            phase = 'Converting'
+    elif 'creating single lif' in text_lower:
+        phase = 'Creating LIF'
+    
+    # Extract suffix (text after percentage)
+    suffix = ''
+    suffix_match = re.search(r'\d+(?:\.\d+)?%\s*[-–]?\s*(.+)', text)
+    if suffix_match:
+        suffix = suffix_match.group(1).strip()
+    
+    return {'percent': percent, 'phase': phase, 'suffix': suffix}
 
 
 # ----------------------------- Theme (inspired by MultiRepAnalysisQT) -----------------------------
@@ -57,25 +107,53 @@ def apply_dark_theme(app: QApplication) -> None:
 # ----------------------------- Worker to run conversion with progress -----------------------------
 class StdoutSignalEmitter:
     """A lightweight stdout replacement to route print() to a Qt signal."""
-    def __init__(self, signal):
+    def __init__(self, signal, parsed_signal=None):
         self.signal = signal
+        self.parsed_signal = parsed_signal
         self._buffer = ""
 
     def write(self, s: str):
         self._buffer += s
-        while '\n' in self._buffer:
-            line, self._buffer = self._buffer.split('\n', 1)
-            if line.strip():
-                self.signal.emit(line)
+        # Handle carriage return (in-place updates) - emit the last line segment
+        while '\r' in self._buffer or '\n' in self._buffer:
+            # Find the first occurrence of either
+            cr_pos = self._buffer.find('\r')
+            nl_pos = self._buffer.find('\n')
+            
+            if nl_pos >= 0 and (cr_pos < 0 or nl_pos < cr_pos):
+                # Newline first - emit the complete line
+                line, self._buffer = self._buffer.split('\n', 1)
+                self._emit_line(line.strip())
+            elif cr_pos >= 0:
+                # Carriage return - emit and continue (in-place update)
+                line, self._buffer = self._buffer.split('\r', 1)
+                self._emit_line(line.strip())
+            else:
+                break
+    
+    def _emit_line(self, line: str):
+        if not line:
+            return
+        self.signal.emit(line)
+        # Also emit parsed progress if available
+        if self.parsed_signal:
+            parsed = parse_progress_text(line)
+            if parsed:
+                self.parsed_signal.emit(
+                    int(parsed['percent']),
+                    parsed['phase'],
+                    parsed['suffix']
+                )
 
     def flush(self):
         if self._buffer.strip():
-            self.signal.emit(self._buffer.strip())
+            self._emit_line(self._buffer.strip())
         self._buffer = ""
 
 
 class ConvertWorker(QThread):
     progress = pyqtSignal(str)
+    progressParsed = pyqtSignal(int, str, str)  # percent (0-100), phase, suffix
     finished = pyqtSignal(bool, object)  # success, result(list/dict/None)
 
     def __init__(self, inputfile: str, image_uuid: str, outputfolder: str, xy_check_value: int = 3192):
@@ -88,7 +166,7 @@ class ConvertWorker(QThread):
     def run(self):  # noqa: D401
         """Run convert_leica and emit progress lines captured from print()."""
         orig_stdout = sys.stdout
-        sys.stdout = StdoutSignalEmitter(self.progress)
+        sys.stdout = StdoutSignalEmitter(self.progress, self.progressParsed)
         try:
             result_json = convert_leica(
                 inputfile=self.inputfile,
@@ -306,6 +384,37 @@ class ConvertLeicaApp(QMainWindow):
         self.meta_text.setPlaceholderText("Image metadata will appear here")
         self.meta_text.setMaximumHeight(140)
         right_right_layout.addWidget(self.meta_text)
+
+    # Progress bar section
+        progress_widget = QWidget()
+        progress_layout = QVBoxLayout(progress_widget)
+        progress_layout.setContentsMargins(0, 4, 0, 4)
+        progress_layout.setSpacing(2)
+        
+        # Phase label and progress bar in a row
+        progress_row = QHBoxLayout()
+        self.lbl_progress_phase = QLabel("")
+        self.lbl_progress_phase.setMinimumWidth(120)
+        progress_row.addWidget(self.lbl_progress_phase)
+        
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFormat("%p%")
+        self.progress_bar.setMinimumHeight(20)
+        progress_row.addWidget(self.progress_bar, 1)
+        
+        progress_layout.addLayout(progress_row)
+        
+        # Status/suffix label
+        self.lbl_progress_suffix = QLabel("")
+        self.lbl_progress_suffix.setStyleSheet("color: #888; font-size: 11px;")
+        progress_layout.addWidget(self.lbl_progress_suffix)
+        
+        progress_widget.setVisible(False)  # Hidden by default
+        self.progress_widget = progress_widget
+        right_right_layout.addWidget(progress_widget)
 
     # Log output
         self.log = QTextEdit(); self.log.setReadOnly(True); self.log.setMinimumHeight(120)
@@ -610,15 +719,42 @@ class ConvertLeicaApp(QMainWindow):
         xy_value = self.spin_xy_threshold.value() if self.chk_large_only.isChecked() else 1
         self.worker = ConvertWorker(self.current_file, self.selected_image.uuid, outdir, xy_check_value=xy_value)
         self.worker.progress.connect(self.append_log)
+        self.worker.progressParsed.connect(self.on_progress_update)
         self.worker.finished.connect(self.on_convert_finished)
+        
+        # Show and reset progress bar
+        self.progress_widget.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.lbl_progress_phase.setText("Starting...")
+        self.lbl_progress_suffix.setText("")
+        
         self.worker.start()
 
+    def on_progress_update(self, percent: int, phase: str, suffix: str):
+        """Update the progress bar with parsed progress data."""
+        self.progress_bar.setValue(percent)
+        self.lbl_progress_phase.setText(phase)
+        self.lbl_progress_suffix.setText(suffix)
+
     def append_log(self, text: str):
+        # Don't append pure progress bar updates to the log (they clutter it)
+        # Only append lines that are not progress bars
+        parsed = parse_progress_text(text)
+        if parsed:
+            # Skip adding progress bar text to log - it's shown in the progress bar
+            return
         self.log.append(text)
         self.log.ensureCursorVisible()
 
     def on_convert_finished(self, success: bool, result):
         self.btn_convert.setEnabled(True)
+        
+        # Hide progress bar and show completion
+        self.progress_bar.setValue(100)
+        self.lbl_progress_phase.setText("Complete" if success else "Failed")
+        self.lbl_progress_suffix.setText("")
+        # Hide progress bar after a short delay (or keep visible to show final state)
+        
         # Show the JSON string in the log panel and in a dialog box after converting
         import json
         if success and result:

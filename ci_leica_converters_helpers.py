@@ -485,7 +485,7 @@ def print_progress_bar(progress: float, *, total: float = 100.0, prefix: str = "
 
     if final_call:
         elapsed = get_elapsed_time(timer_phase)
-        print(f" [{format_elapsed_time(elapsed)}]")
+        print(f" [{prefix.strip().rstrip(':')} {format_elapsed_time(elapsed)}]")
         _max_suffix_len = 0
 
 
@@ -520,7 +520,7 @@ def print_save_progress_bar(progress: float, *, total: float = 100.0, prefix: st
 
     if final_call:
         elapsed = get_elapsed_time(timer_phase)
-        print(f" [{format_elapsed_time(elapsed)}]")
+        print(f" [{prefix.strip().rstrip(':')} {format_elapsed_time(elapsed)}]")
         _save_max_suffix_len = 0
 
 
@@ -554,7 +554,7 @@ def print_copy_progress_bar(progress: float, *, total: float = 100.0, prefix: st
 
     if final_call:
         elapsed = get_elapsed_time(timer_phase)
-        print(f" [{format_elapsed_time(elapsed)}]")
+        print(f" [{prefix.strip().rstrip(':')} {format_elapsed_time(elapsed)}]")
         _copy_max_suffix_len = 0
 
 

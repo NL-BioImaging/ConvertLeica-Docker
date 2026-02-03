@@ -308,7 +308,8 @@ def convert_leica_rgb_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
                                 outputfolder: str | None = None, show_progress: bool = True,
                                 altoutputfolder: str | None = None,
                                 include_original_metadata: bool = False,
-                                tempfolder: str | None = None) -> str | None:
+                                tempfolder: str | None = None,
+                                save_child_name: str | None = None) -> str | None:
     """High-level wrapper - Leica RGB (interleaved) data → OME-TIFF.
     Handles tiled scans by stitching them into a single plane, using byte increments.
 
@@ -316,6 +317,7 @@ def convert_leica_rgb_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
     
     Parameters:
     - tempfolder: Optional custom temp folder for intermediate files. If None, uses system temp.
+    - save_child_name: Optional override for the output filename (without extension).
     """
 
     if pyvips is None:
@@ -438,7 +440,9 @@ def convert_leica_rgb_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
         print(f"\nError creating output directory: {e}")
         return None
 
-    ome_name = f"{meta.get('save_child_name', f'ometiff_rgb_output_{image_uuid}')}.ome.tiff"
+    # Use provided save_child_name if available, otherwise fall back to metadata or default
+    effective_save_child_name = save_child_name if save_child_name else meta.get('save_child_name', f'ometiff_rgb_output_{image_uuid}')
+    ome_name = f"{effective_save_child_name}.ome.tiff"
     out_path = os.path.join(outputfolder, ome_name)
 
     # Use potentially swapped STITCHED dimensions for the final planar array

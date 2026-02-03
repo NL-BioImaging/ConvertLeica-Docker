@@ -261,8 +261,8 @@ def generate_ome_xml(meta: dict, filename: str, *, include_original_metadata: bo
     # --- End Metadata Extraction ---
 
     ome_uuid = uuid.uuid4()
-    # Use filename derived from save_child_name if available
-    image_name = meta.get("save_child_name", os.path.splitext(filename)[0])
+    # Use filename derived from save_child_name if available in metadata
+    image_name = meta.get("save_child_name") or os.path.splitext(filename)[0]
     # Sanitize image name for XML
     image_name = escape_xml_chars(image_name)
 
@@ -298,6 +298,78 @@ def generate_ome_xml(meta: dict, filename: str, *, include_original_metadata: bo
     obj_attrs += f" Description=\"{escape_xml_chars(objective_name)}\""
     xml.append(f"    <Objective {obj_attrs}/>")
 
+    # --- Detector Elements ---
+    # Get detector metadata arrays (only relevant for confocal microscopes)
+    detector_types = meta.get("detector_types", []) or []
+    detector_gains = meta.get("detector_gains", []) or []
+    detector_offsets = meta.get("detector_offsets", []) or []
+    
+    # Get zoom setting (applies to all detectors for confocal)
+    zoom_value = meta.get("zoom")
+    
+    # Only add Detector elements if we have detector data (confocal)
+    # For camera-based systems, detector_types will be empty
+    if detector_types and any(detector_types):
+        for c in range(len(detector_types)):
+            # Only create Detector element if this channel has detector info
+            if c < len(detector_types) and detector_types[c]:
+                det_attrs = f"ID=\"Detector:{c}\""
+                det_type = detector_types[c]
+                det_attrs += f" Model=\"{escape_xml_chars(str(det_type))}\""
+                
+                # Map detector type to OME Type enumeration
+                det_type_lower = det_type.lower() if isinstance(det_type, str) else ""
+                is_pmt = "pmt" in det_type_lower
+                is_hyd = "hyd" in det_type_lower or "hybrid" in det_type_lower
+                
+                if is_pmt:
+                    det_attrs += " Type=\"PMT\""
+                elif is_hyd:
+                    det_attrs += " Type=\"Other\""  # HyD is hybrid, closest OME match is Other
+                elif "ccd" in det_type_lower:
+                    det_attrs += " Type=\"CCD\""
+                elif "emccd" in det_type_lower:
+                    det_attrs += " Type=\"EMCCD\""
+                elif "cmos" in det_type_lower:
+                    det_attrs += " Type=\"CMOS\""
+                elif "apd" in det_type_lower:
+                    det_attrs += " Type=\"APD\""
+            
+                # Handle Gain/Voltage based on detector type
+                # For PMT: Leica "Gain" is the high voltage, map to OME "Voltage"
+                # For HyD: Leica "Gain" is amplification gain, map to OME "Gain"
+                if c < len(detector_gains) and detector_gains[c] is not None:
+                    try:
+                        gain_val = float(detector_gains[c])
+                        if is_pmt:
+                            # PMT uses Voltage for the high voltage setting
+                            det_attrs += f" Voltage=\"{gain_val}\""
+                        else:
+                            # HyD and other detectors use Gain
+                            det_attrs += f" Gain=\"{gain_val}\""
+                    except (ValueError, TypeError):
+                        pass
+                
+                # Add Offset if available (relevant for PMT detectors)
+                if c < len(detector_offsets) and detector_offsets[c] is not None:
+                    try:
+                        offset_val = float(detector_offsets[c])
+                        det_attrs += f" Offset=\"{offset_val}\""
+                    except (ValueError, TypeError):
+                        pass
+                
+                # Add Zoom if available (confocal scan zoom)
+                if zoom_value is not None:
+                    try:
+                        zoom_float = float(zoom_value)
+                        if zoom_float > 0:
+                            det_attrs += f" Zoom=\"{zoom_float}\""
+                    except (ValueError, TypeError):
+                        pass
+                
+                xml.append(f"    <Detector {det_attrs}/>")
+    # --- End Detector Elements ---
+
     xml.append("  </Instrument>")
     # --- End Instrument Block ---
 
@@ -311,7 +383,7 @@ def generate_ome_xml(meta: dict, filename: str, *, include_original_metadata: bo
         f"            SignificantBits=\"{sbits}\"", # Add SignificantBits attribute
         f"            SizeX=\"{xs}\" SizeY=\"{ys}\" SizeZ=\"{zs}\" SizeC=\"{channels}\" SizeT=\"{ts}\"",
         f"            PhysicalSizeX=\"{xres_um}\" PhysicalSizeY=\"{yres_um}\" PhysicalSizeZ=\"{zres_um}\" "
-        f"PhysicalSizeXUnit=\"µm\" PhysicalSizeYUnit=\"µm\" PhysicalSizeZUnit=\"µm\"",
+        f"PhysicalSizeXUnit=\"\u00B5m\" PhysicalSizeYUnit=\"\u00B5m\" PhysicalSizeZUnit=\"\u00B5m\"",
         "            Interleaved=\"false\">",
     ])
 
@@ -374,9 +446,19 @@ def generate_ome_xml(meta: dict, filename: str, *, include_original_metadata: bo
 
         # Add PinholeSize if available and valid
         if pinhole_size_um is not None and isinstance(pinhole_size_um, (int, float)) and pinhole_size_um > 0:
-             channel_attrs += f" PinholeSize=\"{pinhole_size_um}\" PinholeSizeUnit=\"µm\""
+             channel_attrs += f" PinholeSize=\"{pinhole_size_um}\" PinholeSizeUnit=\"\u00B5m\""
 
-        xml.append(f"      <Channel {channel_attrs}/>")
+        # Check if we have detector settings to add as child element
+        has_detector = c < len(detector_types) and detector_types[c]
+        
+        if has_detector:
+            # Use opening tag with child DetectorSettings
+            xml.append(f"      <Channel {channel_attrs}>")
+            xml.append(f"        <DetectorSettings ID=\"Detector:{c}\"/>")
+            xml.append(f"      </Channel>")
+        else:
+            # Self-closing if no detector info
+            xml.append(f"      <Channel {channel_attrs}/>")
 
     # One <TiffData> + <Plane> per IFD (order T slowest, C middle, Z fastest) for XYZCT
     ifd = 0
@@ -427,7 +509,8 @@ def convert_leica_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
                        outputfolder: str | None = None, show_progress: bool = True,
                        altoutputfolder: str | None = None,
                        include_original_metadata: bool = False,
-                       tempfolder: str | None = None) -> str | None:
+                       tempfolder: str | None = None,
+                       save_child_name: str | None = None) -> str | None:
     """High-level wrapper - multi-channel, multi-Z Leica → OME-TIFF.
     Handles tiled scans with positive overlap by stitching them into single planes.
     Handles image orientation metadata (flip/swap) for tiles.
@@ -437,6 +520,7 @@ def convert_leica_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
     
     Parameters:
     - tempfolder: Optional custom temp folder for intermediate files. If None, uses system temp.
+    - save_child_name: Optional override for the output filename (without extension).
     """
 
     if pyvips is None:
@@ -568,7 +652,9 @@ def convert_leica_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
         print(f"\nError creating output directory: {e}")
         return None
 
-    ome_name = f"{meta.get('save_child_name', f'ometiff_output_{image_uuid}')}.ome.tiff"
+    # Use provided save_child_name if available, otherwise fall back to metadata or default
+    effective_save_child_name = save_child_name if save_child_name else meta.get('save_child_name', f'ometiff_output_{image_uuid}')
+    ome_name = f"{effective_save_child_name}.ome.tiff"
     out_path = os.path.join(outputfolder, ome_name)
 
     final_planar_height = channels * zs * ts * canvas_ys
@@ -781,7 +867,8 @@ def convert_leica_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
 
         ome_xml = generate_ome_xml(meta, ome_name, include_original_metadata=include_original_metadata)
         img = img.copy()
-        img.set_type(pyvips.GValue.gstr_type, "image-description", ome_xml.encode("utf-8"))
+        # pyvips expects a string, not bytes - it handles the encoding internally
+        img.set_type(pyvips.GValue.gstr_type, "image-description", ome_xml)
 
         if show_progress:
             print_progress_bar(100, prefix="Converting to OME-TIFF:", suffix="Processing complete", final_call=True)

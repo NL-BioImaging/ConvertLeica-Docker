@@ -44,3 +44,4 @@
 % docker run --rm -v "/mnt/data":/data -v "/mnt/data/.processed":/out -v "/mnt/data/out":/outalt convertleica-docker --inputfile /data/NegOverlapTilescan-2t-3pos.lof --outputfolder "/out" --altoutputfolder "/outalt" --show_progress
 % docker run --rm -v "/mnt/data":/data -v "/mnt/data/.processed":/out -v "/mnt/data/out":/outalt convertleica-docker --inputfile /data/NegOverlapTilescan-2t-3pos/NegOverlapTilescan-2t-3pos.xlef --image_uuid 7dcbf9b7-6de2-11f0-bed3-80e82ce1e716 --outputfolder "/out" --altoutputfolder "/outalt" --show_progress
 
+% docker run --rm -v "/mnt/data":/data -v "/mnt/data/.processed":/out -v "/mnt/data/out":/outalt convertleica-docker --inputfile /data/RGB-XLEF-Multilevel/RGB-Multilevel.xlef --image_uuid 84940db9-8403-11f0-bed5-80e82ce1e716 --outputfolder "/out" --altoutputfolder "/outalt" --show_progress

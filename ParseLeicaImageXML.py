@@ -76,6 +76,64 @@ def parse_image_xml(xml_element):
     metadata['dimensions'] = { # Consolidated dimensions
         'x': 1, 'y': 1, 'z': 1, 'c': 1, 't': 1, 's': 1, 'isrgb': False
     }
+    
+    # Scan settings (confocal)
+    metadata['zoom'] = None
+    metadata['scan_speed'] = None
+    metadata['scan_direction'] = None
+    metadata['is_resonant_scanner'] = None
+    metadata['scan_mode'] = None
+    metadata['pixel_dwell_time_us'] = None
+    metadata['line_time_us'] = None
+    metadata['frame_time_ms'] = None
+    metadata['frame_average'] = None
+    metadata['line_average'] = None
+    metadata['frame_accumulation'] = None
+    metadata['line_accumulation'] = None
+    
+    # Stage position
+    metadata['stage_pos_x_m'] = None
+    metadata['stage_pos_y_m'] = None
+    
+    # Camera settings (widefield)
+    metadata['exposure_times_s'] = []
+    metadata['camera_gains'] = []
+    metadata['camera_name'] = None
+    metadata['binning'] = None
+    
+    # Channel names (user-defined names like DAPI, GFP, etc.)
+    metadata['channel_names'] = []
+    
+    # Climate control settings (live cell imaging)
+    metadata['temperature_c'] = None
+    metadata['co2_percent'] = None
+    metadata['objective_heater_c'] = None
+    
+    # Coverslip thickness (optical corrections)
+    metadata['coverslip_thickness_um'] = None
+    
+    # Illumination intensities
+    metadata['laser_intensities'] = []  # List of {wavelength, intensity_percent}
+    metadata['led_intensities'] = []    # List of {wavelength, intensity_percent}
+    
+    # Detector settings (confocal) - per channel
+    metadata['detector_types'] = []      # e.g., ['PMT', 'HyD', 'HPD']
+    metadata['detector_gains'] = []      # Gain values per channel
+    metadata['detector_offsets'] = []    # Offset values per channel
+    
+    # Additional confocal settings
+    metadata['pinhole_airy'] = None      # Pinhole in Airy units (objective-independent)
+    metadata['phase_x'] = None           # Bidirectional phase correction
+    metadata['rotator_angle'] = None     # Scan rotation angle in degrees
+    metadata['system_serial_number'] = None  # Microscope serial number
+    
+    # Z-stack bounds (absolute positions)
+    metadata['zstack_begin_m'] = None    # Z-stack start position in meters
+    metadata['zstack_end_m'] = None      # Z-stack end position in meters
+    metadata['zstack_sections'] = None   # Planned number of sections
+    
+    # Gamma values for display
+    metadata['gammavalue'] = []
 
     # Temporary storage for overlap values from XML
     xml_overlap_x_value = None
@@ -114,6 +172,18 @@ def parse_image_xml(xml_element):
                 metadata['channelbytesinc'].append(int(bytes_inc) if bytes_inc else None)
                 metadata['channelResolution'].append(int(resolution) if resolution else None)
                 metadata['lutname'].append(lut_name.lower() if lut_name else '')
+                
+                # Extract channel name from ChannelProperty with Key="DyeName"
+                channel_name = None
+                channel_properties = channel_desc.findall('ChannelProperty')
+                for prop in channel_properties:
+                    key_elem = prop.find('Key')
+                    value_elem = prop.find('Value')
+                    if key_elem is not None and key_elem.text and key_elem.text.strip() == 'DyeName':
+                        if value_elem is not None and value_elem.text:
+                            channel_name = value_elem.text.strip()
+                            break
+                metadata['channel_names'].append(channel_name if channel_name else '')
         else:
             # Single channel, handle separately
             channel_desc = image_description.find('.//ChannelDescription')
@@ -125,6 +195,18 @@ def parse_image_xml(xml_element):
                 metadata['channelResolution'].append(int(resolution) if resolution else None)
                 metadata['lutname'].append(lut_name.lower() if lut_name else '')
                 metadata['channels'] = 1
+                
+                # Extract channel name from ChannelProperty with Key="DyeName"
+                channel_name = None
+                channel_properties = channel_desc.findall('ChannelProperty')
+                for prop in channel_properties:
+                    key_elem = prop.find('Key')
+                    value_elem = prop.find('Value')
+                    if key_elem is not None and key_elem.text and key_elem.text.strip() == 'DyeName':
+                        if value_elem is not None and value_elem.text:
+                            channel_name = value_elem.text.strip()
+                            break
+                metadata['channel_names'].append(channel_name if channel_name else '')
         pass # Added pass
 
         # Extract Dimensions
@@ -179,20 +261,25 @@ def parse_image_xml(xml_element):
                 for csi in channel_scaling_infos:
                     black_value = float(csi.attrib.get('BlackValue', '0'))
                     white_value = float(csi.attrib.get('WhiteValue', '1'))
+                    gamma_value = float(csi.attrib.get('GammaValue', '1'))
                     metadata['blackvalue'].append(black_value)
                     metadata['whitevalue'].append(white_value)
+                    metadata['gammavalue'].append(gamma_value)
             else:
                 csi = viewer_scaling.find('ChannelScalingInfo')
                 if csi is not None:
                     black_value = float(csi.attrib.get('BlackValue', '0'))
                     white_value = float(csi.attrib.get('WhiteValue', '1'))
+                    gamma_value = float(csi.attrib.get('GammaValue', '1'))
                     metadata['blackvalue'].append(black_value)
                     metadata['whitevalue'].append(white_value)
+                    metadata['gammavalue'].append(gamma_value)
         else:
-            # Default black/white
+            # Default black/white/gamma
             for _ in range(metadata['channels']):
                 metadata['blackvalue'].append(0)
                 metadata['whitevalue'].append(1)
+                metadata['gammavalue'].append(1)
 
 
         # Extract HardwareSetting
@@ -235,6 +322,176 @@ def parse_image_xml(xml_element):
                         except ValueError:
                             print(f"Warning: Could not parse Pinhole value '{pinhole_m_str}'")
                             metadata['pinholesize_um'] = None  # Ensure it's None if parsing fails
+                    
+                    # Pinhole in Airy units (objective-independent, more meaningful)
+                    pinhole_airy_str = attributes.get('PinholeAiry')
+                    if pinhole_airy_str:
+                        try:
+                            metadata['pinhole_airy'] = float(pinhole_airy_str)
+                        except ValueError:
+                            pass
+                    
+                    # Z-stack bounds (absolute positions in meters)
+                    zstack_begin_str = attributes.get('Begin')
+                    if zstack_begin_str:
+                        try:
+                            metadata['zstack_begin_m'] = float(zstack_begin_str)
+                        except ValueError:
+                            pass
+                    
+                    zstack_end_str = attributes.get('End')
+                    if zstack_end_str:
+                        try:
+                            metadata['zstack_end_m'] = float(zstack_end_str)
+                        except ValueError:
+                            pass
+                    
+                    zstack_sections_str = attributes.get('Sections')
+                    if zstack_sections_str:
+                        try:
+                            metadata['zstack_sections'] = int(zstack_sections_str)
+                        except ValueError:
+                            pass
+
+                    # Extract scan settings
+                    zoom_str = attributes.get('Zoom')
+                    if zoom_str:
+                        try:
+                            metadata['zoom'] = float(zoom_str)
+                        except ValueError:
+                            pass
+                    
+                    scan_speed_str = attributes.get('ScanSpeed')
+                    if scan_speed_str:
+                        try:
+                            metadata['scan_speed'] = int(float(scan_speed_str))
+                        except ValueError:
+                            pass
+                    
+                    metadata['scan_direction'] = attributes.get('ScanDirectionXName')
+                    
+                    # Bidirectional phase correction (only relevant for bidirectional scanning)
+                    phase_x_str = attributes.get('PhaseX')
+                    if phase_x_str:
+                        try:
+                            metadata['phase_x'] = float(phase_x_str)
+                        except ValueError:
+                            pass
+                    
+                    # Rotator/scan angle
+                    rotator_str = attributes.get('RotatorAngle')
+                    if rotator_str:
+                        try:
+                            metadata['rotator_angle'] = float(rotator_str)
+                        except ValueError:
+                            pass
+                    
+                    # System serial number
+                    metadata['system_serial_number'] = attributes.get('SystemSerialNumber')
+                    
+                    is_resonant_str = attributes.get('IsResonantConfocalScanner')
+                    if is_resonant_str:
+                        metadata['is_resonant_scanner'] = is_resonant_str == '1'
+                    
+                    metadata['scan_mode'] = attributes.get('ScanMode')
+                    
+                    # Pixel dwell time (convert seconds to microseconds)
+                    pixel_dwell_str = attributes.get('PixelDwellTime')
+                    if pixel_dwell_str:
+                        try:
+                            metadata['pixel_dwell_time_us'] = float(pixel_dwell_str) * 1_000_000
+                        except ValueError:
+                            pass
+                    
+                    # Line time (convert seconds to microseconds)
+                    line_time_str = attributes.get('LineTime')
+                    if line_time_str:
+                        try:
+                            metadata['line_time_us'] = float(line_time_str) * 1_000_000
+                        except ValueError:
+                            pass
+                    
+                    # Frame time (convert seconds to milliseconds)
+                    frame_time_str = attributes.get('FrameTime')
+                    if frame_time_str:
+                        try:
+                            metadata['frame_time_ms'] = float(frame_time_str) * 1000
+                        except ValueError:
+                            pass
+                    
+                    # Averaging/Accumulation settings
+                    frame_avg_str = attributes.get('FrameAverage')
+                    if frame_avg_str:
+                        try:
+                            metadata['frame_average'] = int(frame_avg_str)
+                        except ValueError:
+                            pass
+                    
+                    line_avg_str = attributes.get('LineAverage')
+                    if line_avg_str:
+                        try:
+                            metadata['line_average'] = int(line_avg_str)
+                        except ValueError:
+                            pass
+                    
+                    frame_acc_str = attributes.get('FrameAccumulation')
+                    if frame_acc_str:
+                        try:
+                            metadata['frame_accumulation'] = int(frame_acc_str)
+                        except ValueError:
+                            pass
+                    
+                    line_acc_str = attributes.get('Line_Accumulation')
+                    if line_acc_str:
+                        try:
+                            metadata['line_accumulation'] = int(line_acc_str)
+                        except ValueError:
+                            pass
+                    
+                    # Stage position (in meters)
+                    stage_x_str = attributes.get('StagePosX')
+                    if stage_x_str:
+                        try:
+                            metadata['stage_pos_x_m'] = float(stage_x_str)
+                        except ValueError:
+                            pass
+                    
+                    stage_y_str = attributes.get('StagePosY')
+                    if stage_y_str:
+                        try:
+                            metadata['stage_pos_y_m'] = float(stage_y_str)
+                        except ValueError:
+                            pass
+                    
+                    # Climate control settings (confocal)
+                    temp_str = attributes.get('IncubatorTemperature')
+                    if temp_str:
+                        try:
+                            metadata['temperature_c'] = float(temp_str)
+                        except ValueError:
+                            pass
+                    
+                    co2_str = attributes.get('IncubatorCO2Percentage')
+                    if co2_str:
+                        try:
+                            metadata['co2_percent'] = float(co2_str)
+                        except ValueError:
+                            pass
+                    
+                    obj_heater_str = attributes.get('ObjectiveHeaterTemperature')
+                    if obj_heater_str:
+                        try:
+                            metadata['objective_heater_c'] = float(obj_heater_str)
+                        except ValueError:
+                            pass
+                    
+                    # Coverslip thickness (convert meters to micrometers)
+                    coverslip_str = attributes.get('CoverGlassThickness')
+                    if coverslip_str:
+                        try:
+                            metadata['coverslip_thickness_um'] = float(coverslip_str) * 1_000_000
+                        except ValueError:
+                            pass
 
                     # Extract FlipX, FlipY, SwapXY
                     metadata['flipx'] = int(attributes.get('FlipX', '0'))
@@ -257,16 +514,135 @@ def parse_image_xml(xml_element):
                                     print(f"Warning: Could not parse laser wavelength '{wavelength_str}' from LaserArray")
                     
                     active_lasers.sort() # Sort for easier searching
+                    
+                    # Extract laser intensities
+                    if laser_array is not None:
+                        for laser in laser_array.findall('Laser'):
+                            wavelength_str = laser.attrib.get('Wavelength')
+                            intensity_str = laser.attrib.get('IntensityDev') or laser.attrib.get('Intensity')
+                            if wavelength_str and intensity_str:
+                                try:
+                                    wl = float(wavelength_str)
+                                    intensity = float(intensity_str)
+                                    # Only add if intensity > 0 (laser is active)
+                                    if intensity > 0:
+                                        metadata['laser_intensities'].append({
+                                            'wavelength_nm': int(wl),
+                                            'intensity_percent': round(intensity * 100, 2) if intensity <= 1 else round(intensity, 2)
+                                        })
+                                except ValueError:
+                                    pass
+                    
+                    # Extract detector settings per channel from DetectorList
+                    # For sequential scans, we need to look at LDM_Block_Sequential_List
+                    # Each sequence has its own active detector(s)
+                    
+                    # First, check for sequential scan list
+                    sequential_list = hardware_setting.find('.//LDM_Block_Sequential_List')
+                    if sequential_list is not None:
+                        # Sequential scan mode - extract from each sequence
+                        seq_settings = sequential_list.findall('ATLConfocalSettingDefinition')
+                        for seq_setting in seq_settings:
+                            seq_detector_list = seq_setting.find('DetectorList')
+                            if seq_detector_list is not None:
+                                for detector in seq_detector_list.findall('Detector'):
+                                    is_active = detector.attrib.get('IsActive', '0')
+                                    if is_active == '1':
+                                        det_type = detector.attrib.get('Type', '')
+                                        metadata['detector_types'].append(det_type)
+                                        
+                                        # Get gain/offset from master settings since sequential entries don't have them
+                                        det_name = detector.attrib.get('Name', '')
+                                        det_channel = detector.attrib.get('Channel', '')
+                                        
+                                        # Look up full detector info from master DetectorList
+                                        master_detector_list = confocal_setting.find('DetectorList')
+                                        gain_val = None
+                                        offset_val = None
+                                        if master_detector_list is not None:
+                                            for master_det in master_detector_list.findall('Detector'):
+                                                if master_det.attrib.get('Name') == det_name or master_det.attrib.get('Channel') == det_channel:
+                                                    gain_str = master_det.attrib.get('Gain')
+                                                    if gain_str:
+                                                        try:
+                                                            gain_val = float(gain_str)
+                                                        except ValueError:
+                                                            pass
+                                                    offset_str = master_det.attrib.get('Offset')
+                                                    if offset_str:
+                                                        try:
+                                                            offset_val = float(offset_str)
+                                                        except ValueError:
+                                                            pass
+                                                    break
+                                        
+                                        metadata['detector_gains'].append(gain_val)
+                                        metadata['detector_offsets'].append(offset_val)
+                    else:
+                        # Non-sequential scan - use the main DetectorList
+                        detector_list = confocal_setting.find('DetectorList')
+                        if detector_list is not None:
+                            for detector in detector_list.findall('Detector'):
+                                # Only include active detectors
+                                is_active = detector.attrib.get('IsActive', '0')
+                                if is_active == '1':
+                                    det_type = detector.attrib.get('Type', '')
+                                    metadata['detector_types'].append(det_type)
+                                    
+                                    gain_str = detector.attrib.get('Gain')
+                                    if gain_str:
+                                        try:
+                                            metadata['detector_gains'].append(float(gain_str))
+                                        except ValueError:
+                                            metadata['detector_gains'].append(None)
+                                    else:
+                                        metadata['detector_gains'].append(None)
+                                    
+                                    offset_str = detector.attrib.get('Offset')
+                                    if offset_str:
+                                        try:
+                                            metadata['detector_offsets'].append(float(offset_str))
+                                        except ValueError:
+                                            metadata['detector_offsets'].append(None)
+                                    else:
+                                        metadata['detector_offsets'].append(None)
 
                     # Clear existing default emission/excitation lists
                     metadata['emission'] = []
                     metadata['excitation'] = []
 
                     # 2. Process Spectro/MultiBand and match excitation
+                    # For sequential scans, only extract for channels that have active detectors
+                    active_channels = set()
+                    if sequential_list is not None:
+                        # Build set of active channels from sequential list
+                        seq_settings = sequential_list.findall('ATLConfocalSettingDefinition')
+                        for seq_setting in seq_settings:
+                            seq_detector_list = seq_setting.find('DetectorList')
+                            if seq_detector_list is not None:
+                                for detector in seq_detector_list.findall('Detector'):
+                                    if detector.attrib.get('IsActive', '0') == '1':
+                                        channel_num = detector.attrib.get('Channel')
+                                        if channel_num:
+                                            try:
+                                                active_channels.add(int(channel_num))
+                                            except ValueError:
+                                                pass
+                    
                     spectro = confocal_setting.find('Spectro')
                     if spectro is not None:
                         multiband = spectro.findall('MultiBand')
                         for mb in multiband:
+                            # For sequential scans, only process MultiBand entries for active channels
+                            mb_channel_str = mb.attrib.get('Channel')
+                            if active_channels and mb_channel_str:
+                                try:
+                                    mb_channel = int(mb_channel_str)
+                                    if mb_channel not in active_channels:
+                                        continue  # Skip channels without active detectors
+                                except ValueError:
+                                    pass  # If we can't parse channel, include it anyway
+                            
                             left_world_str = mb.attrib.get('LeftWorld', '0')
                             right_world_str = mb.attrib.get('RightWorld', '0')
                             dye_name = mb.attrib.get('DyeName', '') # Also grab DyeName for filterblock
@@ -406,6 +782,11 @@ def parse_image_xml(xml_element):
                         fluo_cube_name = wfci.attrib.get('FluoCubeName', '')
                         contrast_method_name = wfci.attrib.get('ContrastingMethodName', '')
                         metadata['contrastmethod'].append(contrast_method_name)
+                        
+                        # Extract user-defined channel name
+                        user_def_name = wfci.attrib.get('UserDefName', '')
+                        if user_def_name:
+                            metadata['channel_names'].append(user_def_name)
                         ex_name = fluo_cube_name
                         if fluo_cube_name == 'QUAD-S':
                             ex_name = wfci.attrib.get('FFW_Excitation1FilterName', '')
@@ -437,6 +818,83 @@ def parse_image_xml(xml_element):
                         ex_em = ex_em_wavelengths.get(ex_name, (0, 0))
                         metadata['excitation'].append(ex_em[0])
                         metadata['emission'].append(ex_em[1])
+                    
+                    # Extract camera-specific settings
+                    # Camera name from WideFieldChannelConfigurator
+                    wf_configurator = camera_setting.find('.//WideFieldChannelConfigurator')
+                    if wf_configurator is not None:
+                        metadata['camera_name'] = wf_configurator.attrib.get('CameraName')
+                    
+                    # Binning from CameraFormat
+                    camera_format = camera_setting.find('.//CameraFormat')
+                    if camera_format is not None:
+                        binning_str = camera_format.attrib.get('Binning')
+                        if binning_str:
+                            try:
+                                metadata['binning'] = int(binning_str)
+                            except ValueError:
+                                pass
+                    
+                    # Exposure times and gains from IndividualCameraInfo
+                    individual_cameras = camera_setting.findall('.//IndividualCameraInfo')
+                    for cam_info in individual_cameras:
+                        exp_time_str = cam_info.attrib.get('ExposureTime')
+                        if exp_time_str:
+                            try:
+                                metadata['exposure_times_s'].append(float(exp_time_str))
+                            except ValueError:
+                                pass
+                        gain_str = cam_info.attrib.get('Gain')
+                        if gain_str:
+                            try:
+                                metadata['camera_gains'].append(float(gain_str))
+                            except ValueError:
+                                pass
+                    
+                    # Stage position (in meters) for camera mode
+                    stage_x_str = attributes.get('StagePosX')
+                    if stage_x_str:
+                        try:
+                            metadata['stage_pos_x_m'] = float(stage_x_str)
+                        except ValueError:
+                            pass
+                    
+                    stage_y_str = attributes.get('StagePosY')
+                    if stage_y_str:
+                        try:
+                            metadata['stage_pos_y_m'] = float(stage_y_str)
+                        except ValueError:
+                            pass
+                    
+                    # Climate control settings (camera/widefield)
+                    temp_str = attributes.get('IncubatorTemperature')
+                    if temp_str:
+                        try:
+                            metadata['temperature_c'] = float(temp_str)
+                        except ValueError:
+                            pass
+                    
+                    co2_str = attributes.get('IncubatorCO2Percentage')
+                    if co2_str:
+                        try:
+                            metadata['co2_percent'] = float(co2_str)
+                        except ValueError:
+                            pass
+                    
+                    obj_heater_str = attributes.get('ObjectiveHeaterTemperature')
+                    if obj_heater_str:
+                        try:
+                            metadata['objective_heater_c'] = float(obj_heater_str)
+                        except ValueError:
+                            pass
+                    
+                    # Coverslip thickness (convert meters to micrometers)
+                    coverslip_str = attributes.get('CoverGlassThickness')
+                    if coverslip_str:
+                        try:
+                            metadata['coverslip_thickness_um'] = float(coverslip_str) * 1_000_000
+                        except ValueError:
+                            pass
             else:
                 metadata['mic_type'] = 'unknown'
                 metadata['mic_type2'] = 'generic'
@@ -534,6 +992,23 @@ def parse_image_xml(xml_element):
                          # Also store contrast method if wanted
                          contrast_method_name = wfci.attrib.get('ContrastingMethodName', '')
                          metadata['contrastmethod'].append(contrast_method_name)
+                         
+                         # Extract LED intensities
+                         for i in range(8):
+                             active_state = wfci.attrib.get(f'ILLEDActiveState{i}', '0')
+                             if active_state == '1':
+                                 wl_str = wfci.attrib.get(f'ILLEDWavelength{i}', '0')
+                                 intensity_str = wfci.attrib.get(f'ILLEDIntensity{i}', '0')
+                                 try:
+                                     wl = float(wl_str)
+                                     intensity = float(intensity_str)
+                                     if wl > 0:
+                                         metadata['led_intensities'].append({
+                                             'wavelength_nm': int(wl),
+                                             'intensity_percent': round(intensity * 100, 2) if intensity <= 1 else round(intensity, 2)
+                                         })
+                                 except ValueError:
+                                     pass
 
 
     # Convert resolution units to micrometers
@@ -642,17 +1117,19 @@ def parse_image_xml(xml_element):
     overlap_y_final = metadata.get("OverlapPercentageY", 0.0)
     metadata["OverlapIsNegative"] = (overlap_x_final < 0) or (overlap_y_final < 0)
 
-    # Defaults if empty - This will now apply if confocal parsing failed or wasn't confocal
+    # Defaults if empty - Only apply fluorescence defaults for non-RGB images
+    # RGB images are typically brightfield/transmitted light and don't have fluorescence metadata
     channels_count = metadata.get('channels', 1)
-    if not metadata['emission']:
-        metadata['emission'] = [500] * channels_count
-    if not metadata['excitation']:
-        metadata['excitation'] = [480] * channels_count
-    # Ensure filterblock has the right number of entries if empty
-    if not metadata['filterblock']:
-         metadata['filterblock'] = ['Unknown'] * channels_count
-    elif len(metadata['filterblock']) < channels_count:
-         metadata['filterblock'].extend(['Unknown'] * (channels_count - len(metadata['filterblock'])))
+    if not metadata['isrgb']:
+        if not metadata['emission']:
+            metadata['emission'] = [500] * channels_count
+        if not metadata['excitation']:
+            metadata['excitation'] = [480] * channels_count
+        # Ensure filterblock has the right number of entries if empty
+        if not metadata['filterblock']:
+            metadata['filterblock'] = ['Unknown'] * channels_count
+        elif len(metadata['filterblock']) < channels_count:
+            metadata['filterblock'].extend(['Unknown'] * (channels_count - len(metadata['filterblock'])))
 
 
     # Consolidate dimensions
