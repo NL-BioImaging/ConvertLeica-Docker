@@ -30,9 +30,30 @@ from datetime import datetime
 # Internal helpers from the repo
 from ci_leica_converters_helpers import read_leica_file, get_image_metadata, get_image_metadata_LOF
 from CreatePreview import create_preview_image
-from leica_converter import convert_leica
 import tempfile
 import re
+
+
+def _get_convert_leica():
+    try:
+        from leica_converter import convert_leica as convert_func
+    except Exception as exc:
+        raise RuntimeError(
+            "Conversion support is unavailable in this build. Install the optional conversion backend to enable OME-TIFF export."
+        ) from exc
+    return convert_func
+
+
+def _close_pyinstaller_splash() -> None:
+    try:
+        import pyi_splash  # type: ignore
+    except Exception:
+        return
+
+    try:
+        pyi_splash.close()
+    except Exception:
+        pass
 
 
 # ----------------------------- Progress Parsing Utilities -----------------------------
@@ -168,6 +189,7 @@ class ConvertWorker(QThread):
         orig_stdout = sys.stdout
         sys.stdout = StdoutSignalEmitter(self.progress, self.progressParsed)
         try:
+            convert_leica = _get_convert_leica()
             result_json = convert_leica(
                 inputfile=self.inputfile,
                 image_uuid=self.image_uuid,
@@ -709,6 +731,12 @@ class ConvertLeicaApp(QMainWindow):
         if not outdir:
             QMessageBox.warning(self, "Missing output", "Please choose an output folder.")
             return
+        try:
+            _get_convert_leica()
+        except RuntimeError as exc:
+            QMessageBox.warning(self, "Conversion unavailable", str(exc))
+            self.append_log(str(exc))
+            return
         os.makedirs(outdir, exist_ok=True)
 
         self.log.clear()
@@ -1141,6 +1169,7 @@ def main() -> None:
             pass
     win = ConvertLeicaApp()
     win.show()
+    _close_pyinstaller_splash()
     sys.exit(app.exec())
 
 

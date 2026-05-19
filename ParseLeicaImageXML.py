@@ -1,5 +1,45 @@
 import xml.etree.ElementTree as ET
 
+
+def _unit_to_um_factor(unit):
+    normalized_unit = (unit or '').strip().lower().replace('μ', 'µ')
+    if normalized_unit.endswith('s'):
+        normalized_unit = normalized_unit[:-1]
+
+    unit_factors = {
+        'meter': 1e6,
+        'metre': 1e6,
+        'm': 1e6,
+        'centimeter': 1e4,
+        'centimetre': 1e4,
+        'cm': 1e4,
+        'millimeter': 1e3,
+        'millimetre': 1e3,
+        'mm': 1e3,
+        'micrometer': 1.0,
+        'micrometre': 1.0,
+        'micron': 1.0,
+        'um': 1.0,
+        'µm': 1.0,
+        'inch': 25400.0,
+        'in': 25400.0,
+    }
+    return unit_factors.get(normalized_unit, 1.0)
+
+
+def _coerce_resolution_um(native_value, converted_value, factor):
+    if native_value <= 0:
+        return 0.0
+
+    recalculated_value = native_value * factor
+    if converted_value is None or converted_value <= 0:
+        return recalculated_value
+
+    if factor != 1.0 and abs(converted_value - native_value) <= max(abs(native_value), 1.0) * 1e-12:
+        return recalculated_value
+
+    return converted_value
+
 ###############################################################################
 # Shared metadata parser for images
 ###############################################################################
@@ -1012,23 +1052,10 @@ def parse_image_xml(xml_element):
 
 
     # Convert resolution units to micrometers
-    unit = metadata['resunit'].lower()
-    factor = 1.0 # Default factor
-    if unit in ['meter', 'm']:
-        factor = 1e6
-    elif unit == 'centimeter':
-        factor = 1e4
-    elif unit == 'inch':
-        factor = 25400
-    elif unit == 'millimeter':
-        factor = 1e3
-    elif unit == 'micrometer':
-        factor = 1
-    else:
-        factor = 1  # Default to micrometers
-    metadata['xres2'] = metadata['xres'] * factor
-    metadata['yres2'] = metadata['yres'] * factor
-    metadata['zres2'] = metadata['zres'] * factor
+    factor = _unit_to_um_factor(metadata.get('resunit', ''))
+    metadata['xres2'] = _coerce_resolution_um(metadata.get('xres', 0.0), metadata.get('xres2'), factor)
+    metadata['yres2'] = _coerce_resolution_um(metadata.get('yres', 0.0), metadata.get('yres2'), factor)
+    metadata['zres2'] = _coerce_resolution_um(metadata.get('zres', 0.0), metadata.get('zres2'), factor)
     metadata['resunit2'] = 'micrometer'
 
     # Define the conversion factor for tile positions (PosX, PosY) from meters to micrometers.

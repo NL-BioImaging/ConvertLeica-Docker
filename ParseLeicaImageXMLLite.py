@@ -17,19 +17,35 @@ __all__ = ["parse_image_xml_lite"]
 
 
 def _unit_to_um_factor(unit: str) -> float:
-    u = (unit or "").strip().lower()
-    if u in ("meter", "m"):
+    u = (unit or "").strip().lower().replace("μ", "µ")
+    if u.endswith("s"):
+        u = u[:-1]
+    if u in ("meter", "metre", "m"):
         return 1e6
-    if u in ("centimeter", "cm"):
+    if u in ("centimeter", "centimetre", "cm"):
         return 1e4
-    if u in ("millimeter", "mm"):
+    if u in ("millimeter", "millimetre", "mm"):
         return 1e3
-    if u in ("micrometer", "um", "µm"):
+    if u in ("micrometer", "micrometre", "micron", "um", "µm"):
         return 1.0
     if u in ("inch", "in"):
         return 25400.0
     # Default to micrometers if ambiguous/unknown
     return 1.0
+
+
+def _coerce_resolution_um(native_value: float, converted_value: float, factor: float) -> float:
+    if native_value <= 0:
+        return 0.0
+
+    recalculated_value = native_value * factor
+    if converted_value is None or converted_value <= 0:
+        return recalculated_value
+
+    if factor != 1.0 and abs(converted_value - native_value) <= max(abs(native_value), 1.0) * 1e-12:
+        return recalculated_value
+
+    return converted_value
 
 
 def parse_image_xml_lite(xml_element: ET.Element) -> dict:
@@ -129,9 +145,9 @@ def parse_image_xml_lite(xml_element: ET.Element) -> dict:
 
     # Convert to micrometers
     factor = _unit_to_um_factor(meta.get("resunit", ""))
-    meta["xres2"] = meta["xres"] * factor
-    meta["yres2"] = meta["yres"] * factor
-    meta["zres2"] = meta["zres"] * factor
+    meta["xres2"] = _coerce_resolution_um(meta.get("xres", 0.0), meta.get("xres2"), factor)
+    meta["yres2"] = _coerce_resolution_um(meta.get("yres", 0.0), meta.get("yres2"), factor)
+    meta["zres2"] = _coerce_resolution_um(meta.get("zres", 0.0), meta.get("zres2"), factor)
     meta["resunit2"] = "micrometer"
 
     # Consolidated dimensions
