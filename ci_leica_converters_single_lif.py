@@ -431,7 +431,7 @@ def convert_leica_to_singlelif_temp(inputfile, image_uuid, tempfolder=None,
                 )
         
         if show_progress:
-            print_progress_bar(100.0, prefix='Extracting to temp:', suffix='Complete', final_call=True)
+            print_progress_bar(100.0, prefix='Extracting to temp:', suffix='Temp file ready, starting conversion', final_call=True)
         
         return (temp_lif_path, data_position)
         

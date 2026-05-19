@@ -7,7 +7,25 @@ import glob
 import json
 import base64
 import tempfile
+import shutil
 import uuid as _uuid
+
+
+_PREVIEW_CACHE_VERSION = "pv2"
+
+
+def _prepare_png_for_cv(image: np.ndarray) -> np.ndarray:
+    if image.ndim == 3 and image.shape[2] == 3:
+        return np.ascontiguousarray(image[:, :, ::-1])
+    return image
+
+
+def _write_preview_png(image: np.ndarray, output_path: str) -> None:
+    cv2.imwrite(output_path, _prepare_png_for_cv(image))
+
+
+def _preview_cache_filename(uid: str, preview_height: int) -> str:
+    return f"{uid}_{_PREVIEW_CACHE_VERSION}_h{preview_height}.png"
 
 def create_png_from_metadata(metadata, preview_height=256, use_memmap=True):
     """
@@ -157,7 +175,7 @@ def create_png_from_metadata(metadata, preview_height=256, use_memmap=True):
     impreview = adjust_image_contrast(impreview, max_pixel_value)
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
         temp_image_path = temp_file.name
-        cv2.imwrite(temp_image_path, impreview)
+        _write_preview_png(impreview, temp_image_path)
     return temp_image_path
 
 def create_preview_image(metadata, cache_folder, preview_height=256, use_memmap=True, max_cache_size=100):
@@ -181,7 +199,7 @@ def create_preview_image(metadata, cache_folder, preview_height=256, use_memmap=
         uid = metadata.get("hash") or base or str(_uuid.uuid4())
 
     uuid = str(uid)
-    cache_filename = f"{uuid}_h{preview_height}.png"
+    cache_filename = _preview_cache_filename(uuid, preview_height)
     cache_image_path = os.path.join(cache_folder, cache_filename)
 
     # Check if the cached image exists
@@ -189,7 +207,7 @@ def create_preview_image(metadata, cache_folder, preview_height=256, use_memmap=
         return cache_image_path
 
     temp_image_path = create_png_from_metadata(metadata, preview_height, use_memmap)
-    cv2.imwrite(cache_image_path, cv2.imread(temp_image_path))
+    shutil.copyfile(temp_image_path, cache_image_path)
     os.remove(temp_image_path)
     manage_cache(cache_folder, max_cache_size)
 

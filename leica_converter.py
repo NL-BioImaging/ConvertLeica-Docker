@@ -3,9 +3,17 @@ import json
 import shutil
 
 from ci_leica_converters_single_lif import convert_leica_to_singlelif
-from ci_leica_converters_ometiff import convert_leica_to_ometiff
-from ci_leica_converters_ometiff_rgb import convert_leica_rgb_to_ometiff
+from ci_leica_converters_omezarr import convert_leica_to_omezarr, convert_leica_rgb_to_omezarr
 from ci_leica_converters_helpers import read_image_metadata, _read_xlef_image, _find_image_hierarchical_path, compute_channel_intensity_stats
+
+try:
+    from ci_leica_converters_ometiff import convert_leica_to_ometiff
+    from ci_leica_converters_ometiff_rgb import convert_leica_rgb_to_ometiff
+    _OMETIFF_IMPORT_ERROR = None
+except Exception as exc:
+    convert_leica_to_ometiff = None
+    convert_leica_rgb_to_ometiff = None
+    _OMETIFF_IMPORT_ERROR = exc
 
 
 def _format_display_name(inputfile: str, save_child_name: str | None, fallback_name: str) -> str:
@@ -75,6 +83,33 @@ def _format_save_child_name_with_ext(inputfile: str, save_child_name: str | None
     else:
         # Fallback: just return as-is
         return save_child_name
+
+
+def _result_display_stem(filename: str) -> str:
+    base = os.path.basename(filename)
+    lower = base.lower()
+    for suffix in (".ome.zarr", ".ome.tiff", ".ome.tif"):
+        if lower.endswith(suffix):
+            return base[:-len(suffix)]
+    return os.path.splitext(base)[0]
+
+
+def _normalize_output_format(output_format: str) -> str:
+    normalized = str(output_format or "ome-tiff").strip().lower()
+    if normalized in ("ome_zarr", "zarr"):
+        return "ome-zarr"
+    if normalized in ("ome_tiff", "tiff", "tif"):
+        return "ome-tiff"
+    if normalized != "ome-tiff" and normalized != "ome-zarr":
+        raise ValueError(f"Unsupported output_format: {output_format}")
+    return normalized
+
+
+def _require_ometiff_support() -> None:
+    if convert_leica_to_ometiff is None or convert_leica_rgb_to_ometiff is None:
+        raise RuntimeError(
+            "OME-TIFF conversion support is unavailable in this environment. Install the pyvips-backed TIFF dependencies."
+        ) from _OMETIFF_IMPORT_ERROR
 
 
 def _add_optional_metadata(kv: dict, metadata: dict) -> None:
@@ -351,9 +386,10 @@ def convert_leica(
     get_image_metadata: bool = False,
     get_image_xml: bool = False,
     tempfolder: str | None = None,
+    output_format: str = 'ome-tiff',
 ):
     """
-    Converts Leica LIF, LOF, or XLEF files to OME-TIFF, .LOF, or single-image .LIF based on metadata and specific rules.
+    Converts Leica LIF, LOF, or XLEF files to OME-TIFF, OME-Zarr, .LOF, or single-image .LIF based on metadata and specific rules.
 
     Args:
         inputfile (str): Path to the input LIF/LOF/XLEF file.
@@ -365,11 +401,12 @@ def convert_leica(
         get_image_metadata (bool, optional): When True, include full image metadata JSON under keyvalues.image_metadata_json. Defaults to False.
         get_image_xml (bool, optional): When True, include raw image XML string under keyvalues.image_xml (empty if unavailable). Defaults to False.
         tempfolder (str, optional): Custom temp folder for intermediate files. If None, uses system temp directory. Defaults to None.
+        output_format (str, optional): Output format for converted images. Supported: 'ome-tiff', 'ome-zarr'. Defaults to 'ome-tiff'.
 
     Returns:
         str: JSON array string with conversion results. Each element is a dict with keys:
             - name: base name of the created or relevant file (without extension)
-            - full_path: absolute path to the output file (OME-TIFF, .LOF, or .LIF)
+            - full_path: absolute path to the output file or directory (OME-TIFF, OME-Zarr, .LOF, or .LIF)
             - alt_path: absolute path to the file in altoutputfolder (if used and file exists), else None
         Returns an empty JSON array string ("[]") if no conversion is applicable or an error occurs.
     """
@@ -384,6 +421,7 @@ def convert_leica(
                 processing_msg += f" (UUID: {image_uuid})"
             print(processing_msg + "...") 
 
+        output_format = _normalize_output_format(output_format)
         metadata = read_image_metadata(inputfile, image_uuid)
         filetype = metadata.get("filetype", "").lower()
         xs = metadata.get("xs", 0)
@@ -453,29 +491,55 @@ def convert_leica(
                     if show_progress: print(f"  convert_leica_to_singlelif failed.")
                     return json.dumps([])
             else:
-                # Large LIF, not OverlapIsNegative: OME-TIFF
+                # Large LIF, not OverlapIsNegative: OME-TIFF or OME-Zarr
                 if isrgb:
-                    if show_progress: print(f"  Detected RGB LIF. Calling convert_leica_rgb_to_ometiff...")
-                    created_filename = convert_leica_rgb_to_ometiff(
-                        inputfile=inputfile,
-                        image_uuid=image_uuid,
-                        outputfolder=outputfolder,
-                        show_progress=show_progress,
-                        altoutputfolder=altoutputfolder,
-                        tempfolder=tempfolder,
-                        save_child_name=save_child_name
-                    )
+                    if output_format == 'ome-zarr':
+                        if show_progress: print(f"  Detected RGB LIF. Calling convert_leica_rgb_to_omezarr...")
+                        created_filename = convert_leica_rgb_to_omezarr(
+                            inputfile=inputfile,
+                            image_uuid=image_uuid,
+                            outputfolder=outputfolder,
+                            show_progress=show_progress,
+                            altoutputfolder=altoutputfolder,
+                            tempfolder=tempfolder,
+                            save_child_name=save_child_name
+                        )
+                    else:
+                        _require_ometiff_support()
+                        if show_progress: print(f"  Detected RGB LIF. Calling convert_leica_rgb_to_ometiff...")
+                        created_filename = convert_leica_rgb_to_ometiff(
+                            inputfile=inputfile,
+                            image_uuid=image_uuid,
+                            outputfolder=outputfolder,
+                            show_progress=show_progress,
+                            altoutputfolder=altoutputfolder,
+                            tempfolder=tempfolder,
+                            save_child_name=save_child_name
+                        )
                 else:
-                    if show_progress: print(f"  Detected (Multi/Single) Channel LIF. Calling convert_leica_to_ometiff...")
-                    created_filename = convert_leica_to_ometiff(
-                        inputfile=inputfile,
-                        image_uuid=image_uuid,
-                        outputfolder=outputfolder,
-                        show_progress=show_progress,
-                        altoutputfolder=altoutputfolder,
-                        tempfolder=tempfolder,
-                        save_child_name=save_child_name
-                    )
+                    if output_format == 'ome-zarr':
+                        if show_progress: print(f"  Detected (Multi/Single) Channel LIF. Calling convert_leica_to_omezarr...")
+                        created_filename = convert_leica_to_omezarr(
+                            inputfile=inputfile,
+                            image_uuid=image_uuid,
+                            outputfolder=outputfolder,
+                            show_progress=show_progress,
+                            altoutputfolder=altoutputfolder,
+                            tempfolder=tempfolder,
+                            save_child_name=save_child_name
+                        )
+                    else:
+                        _require_ometiff_support()
+                        if show_progress: print(f"  Detected (Multi/Single) Channel LIF. Calling convert_leica_to_ometiff...")
+                        created_filename = convert_leica_to_ometiff(
+                            inputfile=inputfile,
+                            image_uuid=image_uuid,
+                            outputfolder=outputfolder,
+                            show_progress=show_progress,
+                            altoutputfolder=altoutputfolder,
+                            tempfolder=tempfolder,
+                            save_child_name=save_child_name
+                        )
                 if created_filename:
                     stats = compute_channel_intensity_stats(metadata, sample_fraction=0.1, use_memmap=True)
                     kv = dict(stats)
@@ -485,9 +549,7 @@ def convert_leica(
                     if get_image_xml:
                         kv["image_xml"] = metadata.get("xmlElement") or ""
                     # Format the display name
-                    fallback_name = os.path.splitext(os.path.basename(created_filename))[0]
-                    if fallback_name.endswith('.ome'):
-                        fallback_name = fallback_name[:-4]
+                    fallback_name = _result_display_stem(created_filename)
                     name = _format_display_name(inputfile, save_child_name, fallback_name)
                     full_path = os.path.join(outputfolder, os.path.basename(created_filename))
                     full_path = os.path.normpath(full_path)
@@ -503,10 +565,10 @@ def convert_leica(
                         "alt_path": alt_path,
                         "keyvalues": [kv]
                     }]
-                    if show_progress: print(f"  Finished OME-TIFF conversion.")
+                    if show_progress: print(f"  Finished {'OME-Zarr' if output_format == 'ome-zarr' else 'OME-TIFF'} conversion.")
                     return json.dumps(result)
                 else:
-                    if show_progress: print(f"  OME-TIFF conversion failed.")
+                    if show_progress: print(f"  {'OME-Zarr' if output_format == 'ome-zarr' else 'OME-TIFF'} conversion failed.")
                     return json.dumps([])
 
         elif filetype in [".xlef", ".lof"]:
@@ -521,9 +583,7 @@ def convert_leica(
                     kv["image_xml"] = metadata.get("xmlElement") or ""
                 # Format the display name
                 filename = os.path.basename(relevant_path)
-                fallback_name = os.path.splitext(filename)[0]
-                if fallback_name.endswith('.ome'):
-                    fallback_name = fallback_name[:-4]
+                fallback_name = _result_display_stem(filename)
                 name = _format_display_name(inputfile, save_child_name, fallback_name)
                 full_path = os.path.normpath(relevant_path)
                 alt_path = None
@@ -543,29 +603,55 @@ def convert_leica(
                     print(f"  No conversion needed for small/OverlapIsNegative {filetype}. Returning path: {relevant_path}")
                 return json.dumps(result)
             else:
-                # Large XLEF/LOF, not OverlapIsNegative: OME-TIFF
+                # Large XLEF/LOF, not OverlapIsNegative: OME-TIFF or OME-Zarr
                 if isrgb:
-                    if show_progress: print(f"  Detected RGB {filetype}. Calling convert_leica_rgb_to_ometiff...")
-                    created_filename = convert_leica_rgb_to_ometiff(
-                        inputfile=inputfile,
-                        image_uuid=image_uuid,
-                        outputfolder=outputfolder,
-                        show_progress=show_progress,
-                        altoutputfolder=altoutputfolder,
-                        tempfolder=tempfolder,
-                        save_child_name=save_child_name
-                    )
+                    if output_format == 'ome-zarr':
+                        if show_progress: print(f"  Detected RGB {filetype}. Calling convert_leica_rgb_to_omezarr...")
+                        created_filename = convert_leica_rgb_to_omezarr(
+                            inputfile=inputfile,
+                            image_uuid=image_uuid,
+                            outputfolder=outputfolder,
+                            show_progress=show_progress,
+                            altoutputfolder=altoutputfolder,
+                            tempfolder=tempfolder,
+                            save_child_name=save_child_name
+                        )
+                    else:
+                        _require_ometiff_support()
+                        if show_progress: print(f"  Detected RGB {filetype}. Calling convert_leica_rgb_to_ometiff...")
+                        created_filename = convert_leica_rgb_to_ometiff(
+                            inputfile=inputfile,
+                            image_uuid=image_uuid,
+                            outputfolder=outputfolder,
+                            show_progress=show_progress,
+                            altoutputfolder=altoutputfolder,
+                            tempfolder=tempfolder,
+                            save_child_name=save_child_name
+                        )
                 else:
-                    if show_progress: print(f"  Calling convert_leica_to_ometiff...")
-                    created_filename = convert_leica_to_ometiff(
-                        inputfile=inputfile,
-                        image_uuid=image_uuid,
-                        outputfolder=outputfolder,
-                        show_progress=show_progress,
-                        altoutputfolder=altoutputfolder,
-                        tempfolder=tempfolder,
-                        save_child_name=save_child_name
-                    )
+                    if output_format == 'ome-zarr':
+                        if show_progress: print(f"  Calling convert_leica_to_omezarr...")
+                        created_filename = convert_leica_to_omezarr(
+                            inputfile=inputfile,
+                            image_uuid=image_uuid,
+                            outputfolder=outputfolder,
+                            show_progress=show_progress,
+                            altoutputfolder=altoutputfolder,
+                            tempfolder=tempfolder,
+                            save_child_name=save_child_name
+                        )
+                    else:
+                        _require_ometiff_support()
+                        if show_progress: print(f"  Calling convert_leica_to_ometiff...")
+                        created_filename = convert_leica_to_ometiff(
+                            inputfile=inputfile,
+                            image_uuid=image_uuid,
+                            outputfolder=outputfolder,
+                            show_progress=show_progress,
+                            altoutputfolder=altoutputfolder,
+                            tempfolder=tempfolder,
+                            save_child_name=save_child_name
+                        )
                 if created_filename:
                     stats = compute_channel_intensity_stats(metadata, sample_fraction=0.1, use_memmap=True)
                     kv = dict(stats)
@@ -575,9 +661,7 @@ def convert_leica(
                     if get_image_xml:
                         kv["image_xml"] = metadata.get("xmlElement") or ""
                     # Format the display name
-                    fallback_name = os.path.splitext(os.path.basename(created_filename))[0]
-                    if fallback_name.endswith('.ome'):
-                        fallback_name = fallback_name[:-4]
+                    fallback_name = _result_display_stem(created_filename)
                     name = _format_display_name(inputfile, save_child_name, fallback_name)
                     full_path = os.path.join(outputfolder, os.path.basename(created_filename))
                     full_path = os.path.normpath(full_path)
@@ -593,10 +677,10 @@ def convert_leica(
                         "alt_path": alt_path,
                         "keyvalues": [kv]
                     }]
-                    if show_progress: print(f"  Finished OME-TIFF conversion.")
+                    if show_progress: print(f"  Finished {'OME-Zarr' if output_format == 'ome-zarr' else 'OME-TIFF'} conversion.")
                     return json.dumps(result)
                 else:
-                    if show_progress: print(f"  OME-TIFF conversion failed.")
+                    if show_progress: print(f"  {'OME-Zarr' if output_format == 'ome-zarr' else 'OME-TIFF'} conversion failed.")
                     return json.dumps([])
 
         else:

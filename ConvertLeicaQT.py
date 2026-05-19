@@ -1,4 +1,4 @@
-"""PyQt6 GUI to browse Leica files (LIF/XLEF/LOF), preview images, and convert to OME-TIFF.
+"""PyQt6 GUI to browse Leica files (LIF/XLEF/LOF), preview images, and convert to OME formats.
 
 Features:
 - Folder browser with filtering similar to the web server.
@@ -10,6 +10,7 @@ Features:
 """
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 import json
@@ -20,7 +21,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
     QListWidget, QListWidgetItem, QLabel, QFileDialog, QTextEdit, QSplitter,
     QSizePolicy, QLineEdit, QMessageBox, QDialog, QDialogButtonBox, QTextBrowser,
-    QTreeWidget, QTreeWidgetItem, QStyle, QCheckBox, QSpinBox, QProgressBar
+    QTreeWidget, QTreeWidgetItem, QStyle, QProgressBar
 )
 from PyQt6.QtGui import QIcon, QPixmap, QPalette, QColor
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
@@ -39,7 +40,7 @@ def _get_convert_leica():
         from leica_converter import convert_leica as convert_func
     except Exception as exc:
         raise RuntimeError(
-            "Conversion support is unavailable in this build. Install the optional conversion backend to enable OME-TIFF export."
+            "Conversion support is unavailable in this build. Install the optional conversion backend to enable OME-TIFF and OME-Zarr export."
         ) from exc
     return convert_func
 
@@ -84,7 +85,9 @@ def parse_progress_text(text: str) -> dict | None:
     # Determine phase from prefix (before the progress bar)
     phase = 'Converting'
     text_lower = text.lower()
-    if 'copying source' in text_lower or 'copying output' in text_lower:
+    if 'extracting to temp' in text_lower:
+        phase = 'Preparing input'
+    elif 'copying source' in text_lower or 'copying output' in text_lower:
         phase = 'Copying'
     elif 'saving' in text_lower:
         phase = 'Saving'
@@ -103,6 +106,30 @@ def parse_progress_text(text: str) -> dict | None:
         suffix = suffix_match.group(1).strip()
     
     return {'percent': percent, 'phase': phase, 'suffix': suffix}
+
+
+def _should_skip_tree_entry(name: str) -> bool:
+    low = name.lower()
+    return (
+        "metadata" in low or "_pmd_" in low or "_histo" in low or
+        "_environmetalgraph" in low or low.endswith(".lifext") or
+        low in ("iomanagerconfiguation", "iomanagerconfiguration")
+    )
+
+
+def _root_has_single_image(meta: dict) -> bool:
+    visible_children = []
+    for child in meta.get("children", []):
+        name = child.get("name", "") or child.get("ElementName", "")
+        if _should_skip_tree_entry(name):
+            continue
+        visible_children.append(child)
+
+    if len(visible_children) != 1:
+        return False
+
+    child_type = (visible_children[0].get("type") or "").lower()
+    return child_type not in ("folder", "file")
 
 
 # ----------------------------- Theme (inspired by MultiRepAnalysisQT) -----------------------------
@@ -177,12 +204,12 @@ class ConvertWorker(QThread):
     progressParsed = pyqtSignal(int, str, str)  # percent (0-100), phase, suffix
     finished = pyqtSignal(bool, object)  # success, result(list/dict/None)
 
-    def __init__(self, inputfile: str, image_uuid: str, outputfolder: str, xy_check_value: int = 3192):
+    def __init__(self, inputfile: str, image_uuid: str, outputfolder: str, output_format: str):
         super().__init__()
         self.inputfile = inputfile
         self.image_uuid = image_uuid
         self.outputfolder = outputfolder
-        self.xy_check_value = int(xy_check_value)
+        self.output_format = output_format
 
     def run(self):  # noqa: D401
         """Run convert_leica and emit progress lines captured from print()."""
@@ -195,7 +222,8 @@ class ConvertWorker(QThread):
                 image_uuid=self.image_uuid,
                 outputfolder=self.outputfolder,
                 show_progress=True,
-                xy_check_value=self.xy_check_value,
+                xy_check_value=0,
+                output_format=self.output_format,
             )
             try:
                 result = json.loads(result_json)
@@ -290,7 +318,7 @@ class ImageItem:
 
 # ----------------------------- Main Window -----------------------------
 class ConvertLeicaApp(QMainWindow):
-    VERSION = "1.0.0"
+    VERSION = "1.6.0"
 
     # Try importing server constants for parity; provide sane fallbacks
     try:
@@ -308,9 +336,9 @@ class ConvertLeicaApp(QMainWindow):
         os.makedirs(d, exist_ok=True)
         return d
 
-    def __init__(self) -> None:
+    def __init__(self, *, debug_mode: bool = False) -> None:
         super().__init__()
-        self.setWindowTitle(f"Convert Leica to OME-TIFF v{self.VERSION}")
+        self.setWindowTitle(f"Convert Leica to OME v{self.VERSION}")
         # Optional icon if available
         icon_path = Path(__file__).with_name('images').joinpath('app-icon.png')
         if icon_path.exists():
@@ -318,9 +346,11 @@ class ConvertLeicaApp(QMainWindow):
         self.resize(1200, 800)
 
         self.current_dir = self._default_root()
+        self.debug_mode = bool(debug_mode)
         self.folder_metadata_json: str | None = None  # Cache of current file's folder metadata (JSON string)
         self.current_file: str | None = None
         self.selected_image: ImageItem | None = None
+        self.active_output_format = "ome-tiff"
         # Progressive preview state
         self._preview_job_id: int = 0
         self._preview_worker: PreviewWorker | None = None
@@ -371,10 +401,12 @@ class ConvertLeicaApp(QMainWindow):
         self.btn_show_folder_json = QPushButton("Folder JSON")
         self.btn_show_folder_json.setToolTip("Show the JSON for the selected folder (or file root)")
         self.btn_show_folder_json.clicked.connect(self.show_folder_json)
+        self.btn_show_folder_json.setVisible(self.debug_mode)
         self.btn_show_folder_json.setEnabled(False)
         self.btn_show_image_json = QPushButton("Image JSON")
         self.btn_show_image_json.setToolTip("Show the JSON metadata for the selected image")
         self.btn_show_image_json.clicked.connect(self.show_image_json)
+        self.btn_show_image_json.setVisible(self.debug_mode)
         self.btn_show_image_json.setEnabled(False)
         # Align label heights to the typical button height for a clean, readable header
         try:
@@ -462,20 +494,15 @@ class ConvertLeicaApp(QMainWindow):
         self.edit_out = QLineEdit()
         self.edit_out.setPlaceholderText("Choose output folder…")
         bottom_layout.addWidget(self.edit_out, 1)
-        # XY threshold controls
-        self.chk_large_only = QCheckBox("Only convert LOF files with XY >")
-        self.chk_large_only.setChecked(False)
-        self.chk_large_only.setToolTip("When checked, only convert LOF/XLEF images with XY dimensions greater than the threshold; otherwise, copy through.")
-        bottom_layout.addWidget(self.chk_large_only)
-        self.spin_xy_threshold = QSpinBox()
-        self.spin_xy_threshold.setRange(1, 4096)
-        self.spin_xy_threshold.setValue(3192)
-        self.spin_xy_threshold.setToolTip("XY dimension threshold (pixels)")
-        bottom_layout.addWidget(self.spin_xy_threshold)
-        self.btn_convert = QPushButton("Convert selected image → OME-TIFF")
-        self.btn_convert.clicked.connect(self.convert_selected)
-        self.btn_convert.setEnabled(False)
-        bottom_layout.addWidget(self.btn_convert)
+        bottom_layout.addWidget(QLabel("Convert to:"))
+        self.btn_convert_tiff = QPushButton("OME-TIFF")
+        self.btn_convert_tiff.clicked.connect(lambda: self.convert_selected("ome-tiff"))
+        self.btn_convert_tiff.setEnabled(False)
+        bottom_layout.addWidget(self.btn_convert_tiff)
+        self.btn_convert_zarr = QPushButton("OME-Zarr")
+        self.btn_convert_zarr.clicked.connect(lambda: self.convert_selected("ome-zarr"))
+        self.btn_convert_zarr.setEnabled(False)
+        bottom_layout.addWidget(self.btn_convert_zarr)
         outer.addWidget(bottom, 0)
 
     # Initial load
@@ -510,9 +537,8 @@ class ConvertLeicaApp(QMainWindow):
         self.folder_metadata_json = None
         self.current_file = None
         self.selected_image = None
-        self.btn_convert.setEnabled(False)
-        self.btn_show_folder_json.setEnabled(False)
-        self.btn_show_image_json.setEnabled(False)
+        self._set_convert_buttons_enabled(False)
+        self._set_debug_buttons_enabled(False, False)
         self.meta_text.clear()
         # Default output folder for this directory
         self.edit_out.setText(os.path.join(self.current_dir, "_c"))
@@ -606,6 +632,8 @@ class ConvertLeicaApp(QMainWindow):
                 self.tree_images.addTopLevelItem(root_item)
                 self.populate_children(root_item, meta_json)
                 self.tree_images.expandItem(root_item)
+                if _root_has_single_image(json.loads(meta_json)) and root_item.childCount() == 1:
+                    self.tree_images.setCurrentItem(root_item.child(0))
             elif ext == ".lof":
                 root_item = QTreeWidgetItem([os.path.basename(filepath)])
                 root_item.setData(0, Qt.ItemDataRole.UserRole + 1, "root")
@@ -626,6 +654,7 @@ class ConvertLeicaApp(QMainWindow):
                 root_item.addChild(img_item)
                 self.tree_images.addTopLevelItem(root_item)
                 self.tree_images.expandItem(root_item)
+                self.tree_images.setCurrentItem(img_item)
             else:
                 QMessageBox.information(self, "Unsupported", f"Unsupported file type: {ext}")
         except Exception as e:
@@ -634,8 +663,7 @@ class ConvertLeicaApp(QMainWindow):
         # Default output folder near this file
         outdir = os.path.join(os.path.dirname(filepath), "_c")
         self.edit_out.setText(outdir)
-        # Enable folder JSON only for Leica types
-        self.btn_show_folder_json.setEnabled(ext in (".lif", ".xlef", ".lof"))
+        self._set_debug_buttons_enabled(ext in (".lif", ".xlef", ".lof"), False)
 
     # ----------------------------- Image selection, preview -----------------------------
     def on_image_selection_changed(self):
@@ -643,8 +671,8 @@ class ConvertLeicaApp(QMainWindow):
         if not items or not self.current_file:
             self._cancel_preview_worker()
             self.selected_image = None
-            self.btn_convert.setEnabled(False)
-            self.btn_show_image_json.setEnabled(False)
+            self._set_convert_buttons_enabled(False)
+            self._set_debug_buttons_enabled(self.current_file is not None, False)
             self.meta_text.clear()
             return
         item = items[0]
@@ -653,8 +681,8 @@ class ConvertLeicaApp(QMainWindow):
             self._cancel_preview_worker()
             self._clear_preview()
             self.selected_image = None
-            self.btn_convert.setEnabled(False)
-            self.btn_show_image_json.setEnabled(False)
+            self._set_convert_buttons_enabled(False)
+            self._set_debug_buttons_enabled(True, False)
             self.meta_text.clear()
             return
 
@@ -692,8 +720,8 @@ class ConvertLeicaApp(QMainWindow):
             self._start_progressive_preview(meta)
 
             self.selected_image = ImageItem(name=name, uuid=uuid, meta=meta)
-            self.btn_convert.setEnabled(True)
-            self.btn_show_image_json.setEnabled(True)
+            self._set_convert_buttons_enabled(True)
+            self._set_debug_buttons_enabled(True, True)
             # Store and show metadata summary
             try:
                 self.last_image_meta_json = json.dumps(meta, indent=2)
@@ -708,8 +736,8 @@ class ConvertLeicaApp(QMainWindow):
             self.preview_label.setText("Preview error. See log for details.")
             self.append_log(tb)
             self.selected_image = None
-            self.btn_convert.setEnabled(False)
-            self.btn_show_image_json.setEnabled(False)
+            self._set_convert_buttons_enabled(False)
+            self._set_debug_buttons_enabled(True, False)
             self.meta_text.clear()
 
     def resizeEvent(self, event):  # noqa: N802
@@ -724,7 +752,17 @@ class ConvertLeicaApp(QMainWindow):
         if d:
             self.edit_out.setText(os.path.normpath(d))
 
-    def convert_selected(self):
+    def _set_convert_buttons_enabled(self, enabled: bool):
+        self.btn_convert_tiff.setEnabled(enabled)
+        self.btn_convert_zarr.setEnabled(enabled)
+
+    def _set_debug_buttons_enabled(self, folder_enabled: bool, image_enabled: bool):
+        self.btn_show_folder_json.setVisible(self.debug_mode)
+        self.btn_show_image_json.setVisible(self.debug_mode)
+        self.btn_show_folder_json.setEnabled(self.debug_mode and folder_enabled)
+        self.btn_show_image_json.setEnabled(self.debug_mode and image_enabled)
+
+    def convert_selected(self, output_format: str):
         if not self.current_file or not self.selected_image:
             return
         outdir = self.edit_out.text().strip()
@@ -740,12 +778,12 @@ class ConvertLeicaApp(QMainWindow):
         os.makedirs(outdir, exist_ok=True)
 
         self.log.clear()
-        self.append_log(f"Converting {os.path.basename(self.current_file)} / {self.selected_image.name}\n")
-        self.btn_convert.setEnabled(False)
+        self.active_output_format = output_format
+        format_label = "OME-Zarr" if output_format == "ome-zarr" else "OME-TIFF"
+        self.append_log(f"Converting {os.path.basename(self.current_file)} / {self.selected_image.name} to {format_label}\n")
+        self._set_convert_buttons_enabled(False)
 
-        # Determine xy_check_value based on checkbox
-        xy_value = self.spin_xy_threshold.value() if self.chk_large_only.isChecked() else 1
-        self.worker = ConvertWorker(self.current_file, self.selected_image.uuid, outdir, xy_check_value=xy_value)
+        self.worker = ConvertWorker(self.current_file, self.selected_image.uuid, outdir, output_format)
         self.worker.progress.connect(self.append_log)
         self.worker.progressParsed.connect(self.on_progress_update)
         self.worker.finished.connect(self.on_convert_finished)
@@ -753,7 +791,7 @@ class ConvertLeicaApp(QMainWindow):
         # Show and reset progress bar
         self.progress_widget.setVisible(True)
         self.progress_bar.setValue(0)
-        self.lbl_progress_phase.setText("Starting...")
+        self.lbl_progress_phase.setText(f"Starting {format_label}...")
         self.lbl_progress_suffix.setText("")
         
         self.worker.start()
@@ -775,7 +813,7 @@ class ConvertLeicaApp(QMainWindow):
         self.log.ensureCursorVisible()
 
     def on_convert_finished(self, success: bool, result):
-        self.btn_convert.setEnabled(True)
+        self._set_convert_buttons_enabled(self.selected_image is not None)
         
         # Hide progress bar and show completion
         self.progress_bar.setValue(100)
@@ -987,10 +1025,7 @@ class ConvertLeicaApp(QMainWindow):
         for ch in children:
             name = ch.get("name", "") or ch.get("ElementName", "")
             # Apply same filtering rules as filesystem tree
-            low = name.lower()
-            if ("metadata" in low or "_pmd_" in low or "_histo" in low or
-                "_environmetalgraph" in low or low.endswith(".lifext") or
-                low in ("iomanagerconfiguation", "iomanagerconfiguration")):
+            if _should_skip_tree_entry(name):
                 continue
             uuid = ch.get("uuid") or ""
             ctype = (ch.get("type") or "").lower()
@@ -1156,7 +1191,11 @@ class ConvertLeicaApp(QMainWindow):
 
 
 def main() -> None:
-    app = QApplication(sys.argv)
+    parser = argparse.ArgumentParser(description="Convert Leica Qt GUI")
+    parser.add_argument("--debug", action="store_true", help="Show Folder JSON and Image JSON buttons.")
+    args, qt_args = parser.parse_known_args(sys.argv[1:])
+
+    app = QApplication([sys.argv[0], *qt_args])
     apply_dark_theme(app)
     # Optional stylesheet
     css_file = Path(__file__).parent / "styles" / "darktheme.css"
@@ -1167,7 +1206,7 @@ def main() -> None:
             app.setStyleSheet(css)
         except Exception:
             pass
-    win = ConvertLeicaApp()
+    win = ConvertLeicaApp(debug_mode=args.debug)
     win.show()
     _close_pyinstaller_splash()
     sys.exit(app.exec())

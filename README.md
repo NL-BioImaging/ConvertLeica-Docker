@@ -1,6 +1,6 @@
 # ConvertLeica-Docker
 
-ConvertLeica-Docker is a toolset and web interface for converting Leica LIF, LOF, and XLEF microscopy image files to the OME-TIFF format, with special handling for certain file types and image configurations. It is designed for both command-line and web-based workflows, supporting batch conversion and interactive browsing/conversion of large microscopy datasets.
+ConvertLeica-Docker is a toolset and web interface for converting Leica LIF, LOF, and XLEF microscopy image files to OME-TIFF or OME-Zarr, with special handling for certain file types and image configurations. It is designed for command-line, web-based, and Qt desktop workflows, supporting batch conversion and interactive browsing/conversion of large microscopy datasets.
 
 ---
 
@@ -37,10 +37,10 @@ ConvertLeica-Docker is a toolset and web interface for converting Leica LIF, LOF
 
 ## Features
 
-- **Convert Leica LIF, LOF, and XLEF files to OME-TIFF** (multi-channel, multi-Z, RGB, tilescans, etc.)
+- **Convert Leica LIF, LOF, and XLEF files to OME-TIFF or OME-Zarr** (multi-channel, multi-Z, RGB, tilescans, etc.)
 - **Automatic handling of special cases**: returns .LOF or single-image .LIF files when OME-TIFF is not appropriate
 - **Batch and single-image conversion**
-- **Web interface for browsing, previewing, and converting files**
+- **Web interface and Qt desktop GUI for browsing, previewing, and converting files**
 - **Progress reporting and metadata inspection**
 - **Robust file saving**: Uses a temp-first approach with automatic retry logic for reliable saving to network drives
 - **Dual progress bars**: Separate progress indicators for data processing and file saving phases
@@ -68,6 +68,21 @@ Core packages (all scenarios):
 - numpy>=2.0.0
 - pyvips==3.1.1
 - opencv-python==4.13.0.90
+- numcodecs>=0.12
+- zarr>=3.0.0
+
+### Qt Desktop GUI
+
+The desktop application can be launched directly:
+
+```sh
+python ConvertLeicaQT.py
+python ConvertLeicaQT.py --debug
+```
+
+- The GUI always converts the selected image; there is no LOF/XLEF size-threshold toggle in the desktop app.
+- Use the `Convert to:` row to choose `OME-TIFF` or `OME-Zarr`.
+- `--debug` shows the `Folder JSON` and `Image JSON` buttons for raw metadata inspection.
 
 Install with:
 

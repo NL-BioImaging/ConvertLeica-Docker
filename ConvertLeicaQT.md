@@ -1,6 +1,6 @@
 # ConvertLeicaQT — Desktop GUI for Leica LIF/XLEF/LOF
 
-ConvertLeicaQT is a PyQt6 desktop application to browse Leica files, preview images quickly, and convert to OME‑TIFF using the same logic as the project’s CLI/server. It mirrors the web app’s behavior for progressive previews and disk caching, but runs locally as a native GUI.
+ConvertLeicaQT is a PyQt6 desktop application to browse Leica files, preview images quickly, and convert to OME‑TIFF or OME‑Zarr using the same logic as the project’s CLI/server. It mirrors the web app’s behavior for progressive previews and disk caching, but runs locally as a native GUI.
 
 ## What it does
 
@@ -49,11 +49,11 @@ ConvertLeicaQT is a PyQt6 desktop application to browse Leica files, preview ima
 
 ## Conversion flow
 
-- Click “Convert selected image → OME‑TIFF”. Output goes to the chosen folder (defaults to `…/_c` near the file).
+- Choose `OME-TIFF` or `OME-Zarr` in the `Convert to:` row. Output goes to the chosen folder (defaults to `…/_c` near the file).
 - The GUI spawns a worker that calls `leica_converter.convert_leica(...)` and streams `print()` output into the log.
 - Rules (simplified):
   - LIF: If tilescan with `OverlapIsNegative`, create a single‑image `.lif`. Otherwise create OME‑TIFF (RGB vs multi‑channel handled by separate converters).
-  - XLEF/LOF: If XY ≤ threshold (checkbox), return/copy original path; else convert to OME‑TIFF (RGB handled accordingly).
+  - XLEF/LOF: If XY ≤ threshold (checkbox), return/copy original path; else convert to the selected OME format (RGB handled accordingly).
 - The result dialog lists created paths; the log shows detailed progress.
 ### Robust file saving
 
