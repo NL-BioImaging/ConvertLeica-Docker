@@ -79,6 +79,8 @@ class ParseLeicaSP5MetadataTests(unittest.TestCase):
 
         self.assertEqual(metadata['SystemTypeName'], 'TCS SP5')
         self.assertEqual(metadata['MicroscopeModel'], 'DM6000')
+        self.assertEqual(metadata['mic_type'], 'IncohConfMicr')
+        self.assertEqual(metadata['mic_type2'], 'confocal')
         self.assertEqual(metadata['system_serial_number'], '5100001274')
         self.assertEqual(metadata['objective'], 'HCX APO L U-V-I  63.0x0.90 WATER  UV')
         self.assertEqual(metadata['objective_order_number'], '11506148')

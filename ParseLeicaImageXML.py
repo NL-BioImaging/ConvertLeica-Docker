@@ -125,8 +125,13 @@ def _apply_legacy_sp5_metadata(xml_element, metadata):
         or scanner_value('dblPinhole') is not None
     )
     if is_legacy_confocal:
-        set_if_missing('mic_type', 'IncohConfMicr')
-        set_if_missing('mic_type2', 'confocal')
+        # The generic fallback later in the modern parser may already have
+        # populated these with placeholders. Confirmed SP/TCS scanner records
+        # are stronger evidence and may replace only those placeholders.
+        if str(metadata.get('mic_type') or '').casefold() in ('', 'unknown', 'generic'):
+            metadata['mic_type'] = 'IncohConfMicr'
+        if str(metadata.get('mic_type2') or '').casefold() in ('', 'unknown', 'generic'):
+            metadata['mic_type2'] = 'confocal'
 
     hardware_tree = record_map(records_for(class_name='CFolderHardwareTree'))
     set_if_missing('system_serial_number', hardware_tree.get('system_number'))
