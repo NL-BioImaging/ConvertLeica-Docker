@@ -1012,6 +1012,33 @@ class ConvertLeicaApp(QMainWindow):
                         pretty = pretty[:pos]
                         break
             lines.append(f"Date: {pretty}")
+        microscope = " ".join(str(value) for value in (
+            pick('SystemTypeName', default=''), pick('MicroscopeModel', default='')
+        ) if value).strip()
+        if microscope:
+            lines.append(f"Microscope: {microscope}")
+        objective = pick('objective', default=None)
+        if objective:
+            objective_details = []
+            if pick('magnification', default=None):
+                objective_details.append(f"{pick('magnification')}×")
+            if pick('na', default=None):
+                objective_details.append(f"NA {pick('na')}")
+            if pick('immersion', default=None):
+                objective_details.append(str(pick('immersion')))
+            suffix = f" ({', '.join(objective_details)})" if objective_details else ""
+            lines.append(f"Objective: {objective}{suffix}")
+        excitation = pick('excitation', default=None)
+        emission = pick('emission', default=None)
+        def fmt_wavelength(value):
+            try:
+                return f"{float(value):g} nm"
+            except (TypeError, ValueError):
+                return f"{value} nm"
+        if excitation:
+            lines.append(f"Excitation: {', '.join(fmt_wavelength(value) for value in excitation)}")
+        if emission:
+            lines.append(f"Emission: {', '.join(fmt_wavelength(value) for value in emission)}")
         return "\n".join(lines)
 
     # ----------------------------- Tree helpers -----------------------------

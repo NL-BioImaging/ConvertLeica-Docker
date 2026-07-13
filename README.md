@@ -21,6 +21,7 @@ ConvertLeica-Docker is a toolset and web interface for converting Leica LIF, LOF
     - [Basic Command](#basic-command)
       - [Arguments](#arguments)
     - [Inputs](#inputs)
+    - [List nested image IDs](#list-nested-image-ids)
     - [Outputs](#outputs)
     - [Function Output Format](#function-output-format)
     - [Conversion Scenarios](#conversion-scenarios)
@@ -173,6 +174,30 @@ python main.py --inputfile <path-to-LIF/LOF/XLEF> --outputfolder <output-folder>
 - **LIF**: Leica Image File (may contain multiple images, folders, tilescans, etc.)
 - **LOF**: Leica Object File (single image, often exported from LIF)
 - **XLEF**: Leica Experiment File (may reference multiple images, often RGB)
+
+### List nested image IDs
+
+Use `extract_nested_leica_items` to enumerate every image before submitting
+individual conversion jobs. It expands nested LIF and XLEF folders lazily and
+also supports single-image LOF files and legacy SP5 `MemoryBlockID` values.
+
+```python
+from ci_leica_converters_helpers import extract_nested_leica_items
+
+images = extract_nested_leica_items("/data/experiment.lif")
+for image in images:
+    print(image["uuid"], image["name"])
+```
+
+Each result has the import-compatible shape introduced by OMERO.biomero:
+
+```json
+{
+  "localPath": "/data/experiment.lif",
+  "uuid": "image-or-memory-block-id",
+  "name": "Image name"
+}
+```
 
 ### Outputs
 

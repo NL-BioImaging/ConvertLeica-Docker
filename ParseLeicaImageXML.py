@@ -1,3 +1,4 @@
+import re
 import xml.etree.ElementTree as ET
 
 
@@ -39,6 +40,243 @@ def _coerce_resolution_um(native_value, converted_value, factor):
         return recalculated_value
 
     return converted_value
+
+
+def _apply_legacy_sp5_metadata(xml_element, metadata):
+    """Map LAS AF/SP5 setting records onto the regular metadata schema.
+
+    Older SP5 LIF files use ScannerSettingRecord and FilterSettingRecord
+    instead of ATLConfocalSettingDefinition. Preserve every record and map the
+    settings for which the legacy representation has an unambiguous meaning.
+    Existing modern metadata always takes precedence.
+    """
+    scanner_elements = xml_element.findall('.//ScannerSettingRecord')
+    filter_elements = xml_element.findall('.//FilterSettingRecord')
+    if not scanner_elements and not filter_elements:
+        return
+
+    scanner_records = {}
+    for record in scanner_elements:
+        identifier = record.attrib.get('Identifier')
+        if identifier:
+            scanner_records[identifier] = {
+                'value': record.attrib.get('Variant'),
+                'unit': record.attrib.get('Unit', ''),
+                'description': record.attrib.get('Description', ''),
+            }
+
+    filter_records = [
+        {
+            'object': record.attrib.get('ObjectName', ''),
+            'class': record.attrib.get('ClassName', ''),
+            'attribute': record.attrib.get('Attribute', ''),
+            'value': record.attrib.get('Variant'),
+            'description': record.attrib.get('Description', ''),
+        }
+        for record in filter_elements
+    ]
+    metadata['legacy_scanner_settings'] = scanner_records
+    metadata['legacy_hardware_settings'] = filter_records
+
+    def missing(key):
+        return metadata.get(key) in (None, '', [])
+
+    def set_if_missing(key, value):
+        if value is not None and value != '' and missing(key):
+            metadata[key] = value
+
+    def as_float(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def as_int(value):
+        number = as_float(value)
+        return int(number) if number is not None else None
+
+    def scanner_value(identifier):
+        record = scanner_records.get(identifier)
+        return record.get('value') if record else None
+
+    def records_for(class_name=None, object_name=None):
+        for record in filter_records:
+            if class_name and record['class'] != class_name:
+                continue
+            if object_name and record['object'] != object_name:
+                continue
+            yield record
+
+    def record_map(records):
+        return {record['attribute'].casefold(): record['value'] for record in records}
+
+    # Microscope and objective.
+    set_if_missing('SystemTypeName', scanner_value('SystemType'))
+    stand_names = [
+        record['object'] for record in records_for(class_name='CMicroscopeStand')
+        if record['object'] and record['object'].casefold() != 'microscope'
+    ]
+    set_if_missing('MicroscopeModel', stand_names[0] if stand_names else None)
+    system_type = str(scanner_value('SystemType') or '')
+    is_legacy_confocal = (
+        'tcs' in system_type.casefold()
+        or 'sp' in system_type.casefold()
+        or scanner_value('csScanMode') is not None
+        or scanner_value('dblPinhole') is not None
+    )
+    if is_legacy_confocal:
+        set_if_missing('mic_type', 'IncohConfMicr')
+        set_if_missing('mic_type2', 'confocal')
+
+    hardware_tree = record_map(records_for(class_name='CFolderHardwareTree'))
+    set_if_missing('system_serial_number', hardware_tree.get('system_number'))
+
+    turret = record_map(records_for(class_name='CTurret'))
+    objective = turret.get('objective')
+    set_if_missing('objective', objective)
+    set_if_missing('objective_order_number', turret.get('ordernumber'))
+    set_if_missing('na', as_float(turret.get('numericalaperture')))
+    set_if_missing('refractiveindex', as_float(turret.get('refractionindex')))
+    set_if_missing('magnification', as_float(turret.get('magnification')))
+    if missing('magnification') and objective:
+        match = re.search(r'(\d+(?:\.\d+)?)\s*x', objective, re.IGNORECASE)
+        if match:
+            metadata['magnification'] = float(match.group(1))
+    if missing('immersion') and objective:
+        objective_upper = objective.upper()
+        for token, normalized in (
+            ('WATER', 'Water'), ('WASSER', 'Water'), ('OIL', 'Oil'),
+            ('GLYC', 'Glycerol'), ('SILICONE', 'Other'),
+            ('AIR', 'Air'), ('DRY', 'Air'),
+        ):
+            if token in objective_upper:
+                metadata['immersion'] = normalized
+                break
+
+    # Scanner acquisition settings.
+    set_if_missing('scan_mode', scanner_value('csScanMode'))
+    set_if_missing('zoom', as_float(scanner_value('dblZoom')))
+    set_if_missing('scan_direction', as_int(scanner_value('eDirectional')))
+    set_if_missing('frame_accumulation', as_int(scanner_value('nAccumulation')))
+    set_if_missing('frame_average', as_int(scanner_value('nAverageFrame')))
+    set_if_missing('line_average', as_int(scanner_value('nAverageLine')))
+    set_if_missing('line_accumulation', as_int(scanner_value('nLineAccumulation')))
+    set_if_missing('pinhole_airy', as_float(scanner_value('dblPinholeAiry')))
+    pinhole_m = as_float(scanner_value('dblPinhole'))
+    set_if_missing('pinholesize_um', pinhole_m * 1_000_000 if pinhole_m is not None else None)
+
+    scan_head = record_map(records_for(class_name='CScanCtrlUnit'))
+    set_if_missing('scan_speed', as_int(scan_head.get('speed')))
+    set_if_missing('phase_x', as_float(scan_head.get('phase')))
+    if any('reson' in record['object'].casefold() for record in filter_records):
+        set_if_missing('is_resonant_scanner', True)
+
+    rotator = record_map(records_for(class_name='CRotator'))
+    set_if_missing('rotator_angle', as_float(rotator.get('scan rotation')))
+
+    stage = record_map(records_for(class_name='CXYZStage'))
+    set_if_missing('stage_pos_x_m', as_float(stage.get('xpos')))
+    set_if_missing('stage_pos_y_m', as_float(stage.get('ypos')))
+    set_if_missing('stage_pos_z_m', as_float(stage.get('zpos')))
+
+    z_dimension = xml_element.find('.//DimensionDescription[@DimID="3"]')
+    if z_dimension is not None:
+        z_origin = as_float(z_dimension.attrib.get('Origin'))
+        z_length = as_float(z_dimension.attrib.get('Length'))
+        set_if_missing('zstack_begin_m', z_origin)
+        if z_origin is not None and z_length is not None:
+            set_if_missing('zstack_end_m', z_origin + z_length)
+    set_if_missing('zstack_sections', as_int(scanner_value('nSections')))
+
+    # Active AOTF laser lines and their intensities.
+    active_lasers = []
+    for record in filter_records:
+        if record['class'] != 'CAotf' or 'aotf' not in record['object'].casefold():
+            continue
+        if record['object'].casefold().endswith('low'):
+            continue
+        intensity = as_float(record['value'])
+        match = re.search(r'AOTF\s*\((\d+(?:\.\d+)?)\)', record['description'], re.IGNORECASE)
+        if intensity is not None and intensity > 0 and match:
+            active_lasers.append((float(match.group(1)), intensity))
+    if active_lasers and missing('laser_intensities'):
+        metadata['laser_intensities'] = [
+            {'wavelength_nm': int(wavelength) if wavelength.is_integer() else wavelength,
+             'intensity_percent': round(intensity, 2)}
+            for wavelength, intensity in active_lasers
+        ]
+
+    laser_groups = {}
+    for record in filter_records:
+        if record['class'] == 'CLaser':
+            laser_groups.setdefault(record['object'], []).append(record)
+    if laser_groups:
+        metadata['lasers'] = []
+        for name, records in laser_groups.items():
+            values = record_map(records)
+            metadata['lasers'].append({
+                'name': name,
+                'wavelength_nm': as_float(values.get('wavelength')),
+                'power_state': values.get('power state'),
+                'output_power_percent': as_float(values.get('output power')),
+            })
+
+    # Active detectors and their matching spectrophotometer windows.
+    detector_groups = {}
+    for record in filter_records:
+        if record['class'] == 'CDetectionUnit':
+            detector_groups.setdefault(record['object'], []).append(record)
+    active_detectors = []
+    for name, records in detector_groups.items():
+        values = record_map(records)
+        if str(values.get('state', '')).casefold() != 'active':
+            continue
+        detector_type = (
+            'HyD' if 'hyd' in name.casefold()
+            else ('PMT' if 'pmt' in name.casefold() else name)
+        )
+        gain = as_float(values.get('gain') or values.get('highvoltage'))
+        offset = as_float(values.get('offset'))
+        active_detectors.append((name, detector_type, gain, offset, values.get('acquisitionmode')))
+    if active_detectors and missing('detector_types'):
+        metadata['detector_types'] = [detector[1] for detector in active_detectors]
+        metadata['detector_gains'] = [detector[2] for detector in active_detectors]
+        metadata['detector_offsets'] = [detector[3] for detector in active_detectors]
+        metadata['detector_acquisition_modes'] = [detector[4] for detector in active_detectors]
+
+    emissions = []
+    excitations = []
+    spectral_windows = []
+    for detector_name, *_ in active_detectors:
+        channel_match = re.search(r'(\d+)\s*$', detector_name)
+        if not channel_match:
+            continue
+        spectro_name = f"SP Mirror Channel {channel_match.group(1)}"
+        wavelength_records = [
+            record for record in filter_records
+            if record['object'] == spectro_name and record['attribute'].casefold() == 'wavelength'
+        ]
+        wavelengths = [as_float(record['value']) for record in wavelength_records]
+        wavelengths = [value for value in wavelengths if value is not None]
+        if len(wavelengths) < 2:
+            continue
+        left, right = wavelengths[:2]
+        emission = left + (right - left) / 2
+        possible_lasers = [wavelength for wavelength, _ in active_lasers if wavelength <= emission]
+        emissions.append(int(round(emission)))
+        excitations.append(max(possible_lasers) if possible_lasers else 0.0)
+        spectral_windows.append({'detector': detector_name, 'left_nm': left, 'right_nm': right})
+    if emissions and missing('emission'):
+        metadata['emission'] = emissions
+    if excitations and missing('excitation'):
+        metadata['excitation'] = excitations
+    if spectral_windows:
+        metadata['spectral_windows'] = spectral_windows
+        if missing('filterblock'):
+            metadata['filterblock'] = [
+                f"{window['left_nm']:g}-{window['right_nm']:g} nm"
+                for window in spectral_windows
+            ]
 
 ###############################################################################
 # Shared metadata parser for images
@@ -259,12 +497,19 @@ def parse_image_xml(xml_element):
                 length = float(dim_desc.attrib.get('Length', '0'))
                 bytes_inc = int(dim_desc.attrib.get('BytesInc', '0'))
                 unit = dim_desc.attrib.get('Unit', '')
-                if unit:
+                # resunit describes spatial pixel sizes. A following time
+                # dimension commonly has Unit="s" and must not replace it.
+                if unit and dim_id in (1, 2, 3):
                     metadata['resunit'] = unit
 
                 # Compute resolution
                 if num_elements > 1:
-                    res = length / (num_elements - 1)
+                    # Spatial Length can be negative in legacy confocal files
+                    # when an axis was acquired in reverse (notably SP5 Z
+                    # stacks). Pixel spacing is a magnitude; orientation is
+                    # represented separately and OME physical sizes must be
+                    # positive.
+                    res = abs(length) / (num_elements - 1) if dim_id in (1, 2, 3) else length / (num_elements - 1)
                 else:
                     res = 0
 
@@ -1050,6 +1295,10 @@ def parse_image_xml(xml_element):
                                  except ValueError:
                                      pass
 
+
+    # LAS AF/SP5 uses flat scanner/filter setting records instead of the
+    # modern ATL setting definitions handled above.
+    _apply_legacy_sp5_metadata(xml_element, metadata)
 
     # Convert resolution units to micrometers
     factor = _unit_to_um_factor(metadata.get('resunit', ''))

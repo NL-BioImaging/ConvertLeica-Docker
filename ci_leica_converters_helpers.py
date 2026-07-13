@@ -6,6 +6,7 @@ Overview
 --------
 - File readers: read_leica_file(...), read_image_metadata(...)
 - Metadata helpers: get_image_metadata(...), get_image_metadata_LOF(...)
+- Nested image discovery: extract_nested_leica_items(...)
 - Intensity stats: compute_channel_intensity_stats(...) — fast, approximate
     per-channel min/max using subsampling and numpy.memmap; understands Leica
     planar-versus-interleaved layouts and byte offsets
@@ -53,6 +54,7 @@ import numpy as np
 import xml.etree.ElementTree as ET
 import urllib.request
 import math
+import logging
 from typing import Dict, List, Tuple
 
 try:
@@ -78,6 +80,8 @@ dtype_to_format = {
     np.complex64: "complex",
     np.complex128: "dpcomplex",
 }
+
+logger = logging.getLogger(__name__)
 
 
 def read_leica_file(file_path, include_xmlelement=False, image_uuid=None, folder_uuid=None):
@@ -123,6 +127,129 @@ def get_image_metadata(folder_metadata, image_uuid):
     image_metadata_dict = next((img for img in folder_metadata_dict["children"] if img["uuid"] == image_uuid), None)
     image_metadata = json.dumps(image_metadata_dict, indent=2)
     return image_metadata
+
+
+def _leica_node_uuid(node: dict):
+    """Return the preferred image/folder identifier across Leica formats."""
+    return (
+        node.get("uuid")
+        or node.get("UniqueID")
+        or node.get("ImageUUID")
+        or node.get("BlockID")
+    )
+
+
+def _is_leica_image_node(node: dict) -> bool:
+    node_type = str(node.get("type", "")).lower()
+    node_datatype = str(node.get("datatype", "")).lower()
+    return node_type == "image" or node_datatype == "image"
+
+
+def _iter_leica_image_nodes(node: dict):
+    """Yield already-loaded image nodes from a Leica metadata tree."""
+    if not isinstance(node, dict):
+        return
+    if _is_leica_image_node(node) and _leica_node_uuid(node):
+        yield node
+    for child in node.get("children", []) or []:
+        yield from _iter_leica_image_nodes(child)
+
+
+def _load_leica_folder_children(
+    file_path: str,
+    node: dict,
+    visited_folder_uuids: set,
+) -> List[dict]:
+    """Load one lazy folder level without revisiting cyclic references."""
+    node_type = str(node.get("type", "")).lower()
+    node_datatype = str(node.get("datatype", "")).lower()
+    folder_uuid = _leica_node_uuid(node)
+    children = node.get("children") or []
+    file_ext = os.path.splitext(file_path)[1].lower()
+    is_folder_node = node_type in ("folder", "file") or (
+        not node_type and not node_datatype and bool(folder_uuid)
+    )
+
+    # File roots already carry their top-level children. Only Folder nodes are
+    # lazy. Both readers support folder_uuid lookups from the top container.
+    should_expand = node_type == "folder" or (not node_type and is_folder_node)
+    if children or not should_expand or not folder_uuid:
+        return children
+    if file_ext not in (".lif", ".xlef") or folder_uuid in visited_folder_uuids:
+        return children
+
+    visited_folder_uuids.add(folder_uuid)
+    try:
+        folder_tree = json.loads(read_leica_file(file_path, folder_uuid=folder_uuid))
+    except Exception:
+        logger.exception(
+            "Failed to load Leica folder %s from %s while expanding nested items",
+            folder_uuid,
+            file_path,
+        )
+        return children
+
+    loaded_children = folder_tree.get("children") or []
+    logger.debug(
+        "Loaded %d Leica children from folder %s in %s",
+        len(loaded_children),
+        folder_uuid,
+        file_path,
+    )
+    return loaded_children
+
+
+def extract_nested_leica_items(file_path: str) -> List[dict]:
+    """Return import-ready entries for every image in a Leica container.
+
+    The result shape is compatible with OMERO.biomero PR #13::
+
+        {"localPath": file_path, "uuid": image_id, "name": image_name}
+
+    LIF and XLEF folder trees are expanded lazily. A LOF is represented as one
+    image. Modern UUIDs and legacy SP5 MemoryBlockIDs are both supported.
+    """
+    file_path = os.fspath(file_path)
+    tree = json.loads(read_leica_file(file_path))
+
+    # LOF metadata is an image dictionary without the type/datatype marker
+    # used by the tree readers.
+    if os.path.splitext(file_path)[1].lower() == ".lof":
+        image_uuid = _leica_node_uuid(tree)
+        if not image_uuid:
+            return []
+        return [{
+            "localPath": file_path,
+            "uuid": image_uuid,
+            "name": tree.get("name") or tree.get("ElementName") or tree.get("save_child_name"),
+        }]
+
+    items = []
+    visited_folder_uuids = set()
+    stack = [tree]
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, dict):
+            continue
+
+        node_uuid = _leica_node_uuid(node)
+        if _is_leica_image_node(node) and node_uuid:
+            items.append({
+                "localPath": file_path,
+                "uuid": node_uuid,
+                "name": node.get("name") or node.get("ElementName"),
+            })
+            continue
+
+        children = _load_leica_folder_children(
+            file_path,
+            node,
+            visited_folder_uuids,
+        )
+        stack.extend(reversed(children))
+
+    logger.info("Extracted %d nested Leica image UUIDs from %s", len(items), file_path)
+    return items
 
 
 def _as_int_list(value, length: int, default: int) -> List[int]:

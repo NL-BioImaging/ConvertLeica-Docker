@@ -202,6 +202,21 @@ def read_leica_lif(file_path, include_xmlelement=False, image_uuid=None, folder_
         ch = el.find('Children')
         return [] if ch is None else ch.findall('Element')
 
+    def element_identifier(el: ET.Element):
+        """Return the identifier used to address an element in a LIF tree.
+
+        LAS X normally writes ``UniqueID`` attributes.  Older LAS AF/SP5 LIF
+        files can omit them for both folders and images, while still assigning
+        a unique ``MemoryBlockID`` to every element (including zero-sized
+        folder blocks).  Keep UniqueID as the preferred identifier and use the
+        block ID only as a backwards-compatible fallback.
+        """
+        unique_id = el.attrib.get('UniqueID')
+        if unique_id:
+            return unique_id
+        mem = el.find('Memory')
+        return mem.attrib.get('MemoryBlockID') if mem is not None else None
+
     def is_image_element(el: ET.Element) -> bool:
         mem = el.find('Memory')
         if mem is None:
@@ -215,7 +230,7 @@ def read_leica_lif(file_path, include_xmlelement=False, image_uuid=None, folder_
 
     def make_image_meta(el: ET.Element, current_path: str, include_metadata: bool = False) -> dict:
         name = el.attrib.get('Name', '')
-        unique_id = el.attrib.get('UniqueID')
+        unique_id = element_identifier(el)
         mem = el.find('Memory')
         mem_id = mem.attrib.get('MemoryBlockID') if mem is not None else None
         lif_block = blockid_to_lifinfo.get(mem_id, {
@@ -228,9 +243,6 @@ def read_leica_lif(file_path, include_xmlelement=False, image_uuid=None, folder_
         lif_block = dict(lif_block)  # copy
         lif_block['name'] = name
         lif_block['uuid'] = unique_id
-        # Fallback: if XML UniqueID is missing but Memory BlockID exists, use BlockID as UUID
-        if not lif_block['uuid'] and lif_block.get('BlockID'):
-            lif_block['uuid'] = lif_block['BlockID']
         lif_block['filetype'] = '.lif'
         lif_block['datatype'] = 'Image'
         lif_block['experiment_name'] = experiment_name
@@ -259,19 +271,9 @@ def read_leica_lif(file_path, include_xmlelement=False, image_uuid=None, folder_
             return None
         name = el.attrib.get('Name', '')
         current_path = f"{parent_path}_{name}" if parent_path else name
-        # Match by XML UniqueID first
-        if el.attrib.get('UniqueID') == target_uuid:
+        # Match modern XML UniqueID or the legacy MemoryBlockID fallback.
+        if element_identifier(el) == target_uuid:
             return el, current_path
-        # Also allow matching by MemoryBlockID (BlockID) for images
-        mem = el.find('Memory')
-        if mem is not None:
-            try:
-                size_ok = int(mem.attrib.get('Size', '0')) > 0
-            except ValueError:
-                size_ok = False
-            block_id = mem.attrib.get('MemoryBlockID')
-            if size_ok and block_id and block_id == target_uuid:
-                return el, current_path
         for ch in child_elements(el):
             found = find_element_and_path(ch, target_uuid, current_path, skip_self=False)
             if found:
@@ -350,7 +352,7 @@ def read_leica_lif(file_path, include_xmlelement=False, image_uuid=None, folder_
         }
         for ch in child_elements(folder_el):
             ch_name = ch.attrib.get('Name', '')
-            ch_uuid = ch.attrib.get('UniqueID')
+            ch_uuid = element_identifier(ch)
             ch_path = f"{folder_path}_{ch_name}" if folder_path else ch_name
             if is_image_element(ch):
                 node['children'].append(make_image_meta(ch, ch_path, include_metadata=False))
@@ -375,7 +377,7 @@ def read_leica_lif(file_path, include_xmlelement=False, image_uuid=None, folder_
     if root_el is not None:
         for ch in child_elements(root_el):
             ch_name = ch.attrib.get('Name', '')
-            ch_uuid = ch.attrib.get('UniqueID')
+            ch_uuid = element_identifier(ch)
             if is_image_element(ch):
                 node['children'].append(make_image_meta(ch, ch_name, include_metadata=False))
             else:

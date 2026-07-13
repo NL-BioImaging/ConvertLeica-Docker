@@ -64,6 +64,11 @@ class OMEZarrMetadataTests(unittest.TestCase):
             'zres2': 1.5,
             'channelResolution': [16, 16],
             'channel_names': ['A', 'B'],
+            'objective': 'HCX APO 63x WATER',
+            'magnification': 63.0,
+            'na': 0.9,
+            'refractiveindex': 1.33,
+            'immersion': 'Water',
         }
         temp_dir = tempfile.mkdtemp(suffix='.ome.zarr')
         try:
@@ -78,6 +83,10 @@ class OMEZarrMetadataTests(unittest.TestCase):
             self.assertIn('PhysicalSizeY="0.5"', ome_xml)
             self.assertIn('PhysicalSizeXUnit="µm"', ome_xml)
             self.assertIn('SizeC="2"', ome_xml)
+            self.assertIn('NominalMagnification="63"', ome_xml)
+            self.assertIn('LensNA="0.9"', ome_xml)
+            self.assertIn('RefractiveIndex="1.33"', ome_xml)
+            self.assertIn('Immersion="Water"', ome_xml)
         finally:
             shutil.rmtree(temp_dir)
 

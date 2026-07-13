@@ -124,10 +124,16 @@ def parse_image_xml_lite(xml_element: ET.Element) -> dict:
                 except Exception:
                     length = 0.0
                 unit = d.attrib.get("Unit", meta["resunit"]) or meta["resunit"]
-                if unit and not meta["resunit"]:
+                if unit and dim_id in (1, 2, 3) and not meta["resunit"]:
                     meta["resunit"] = unit
                 # Resolution per element (guard when n<=1)
-                res = (length / (n - 1)) if n > 1 else 0.0
+                if n > 1:
+                    # Legacy SP5 stacks use a negative spatial Length to
+                    # indicate acquisition direction. Resolution itself is a
+                    # positive distance.
+                    res = abs(length) / (n - 1) if dim_id in (1, 2, 3) else length / (n - 1)
+                else:
+                    res = 0.0
 
                 if dim_id == 1:  # X
                     meta["xs"] = n

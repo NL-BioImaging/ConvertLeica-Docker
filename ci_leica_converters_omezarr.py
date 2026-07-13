@@ -229,6 +229,19 @@ def _generate_ome_xml_companion(meta: dict, output_name: str, is_rgb: bool, incl
     size_z = int(meta.get("zs", 1))
     size_t = int(meta.get("ts", 1))
     objective_name = escape_xml_chars(str(meta.get("objective") or "Unknown Objective"))
+    objective_attrs = [f'ID="Objective:0"', f'Description="{objective_name}"']
+    objective_mag = meta.get("magnification")
+    objective_na = meta.get("na")
+    objective_ri = meta.get("refractiveindex")
+    objective_immersion = str(meta.get("immersion") or '').capitalize()
+    if isinstance(objective_mag, (int, float)) and objective_mag > 0:
+        objective_attrs.append(f'NominalMagnification="{objective_mag:g}"')
+    if isinstance(objective_na, (int, float)) and objective_na > 0:
+        objective_attrs.append(f'LensNA="{objective_na:g}"')
+    if isinstance(objective_ri, (int, float)) and objective_ri > 0:
+        objective_attrs.append(f'RefractiveIndex="{objective_ri:g}"')
+    if objective_immersion in {'Air', 'Oil', 'Water', 'Glycerol', 'Multi', 'Other'}:
+        objective_attrs.append(f'Immersion="{objective_immersion}"')
     microscope_model = escape_xml_chars(
         f"{meta.get('SystemTypeName', '')} {meta.get('MicroscopeModel', '')}".strip()
     )
@@ -245,7 +258,7 @@ def _generate_ome_xml_companion(meta: dict, output_name: str, is_rgb: bool, incl
         f"     UUID=\"urn:uuid:{ome_uuid}\">",
         "  <Instrument ID=\"Instrument:0\">",
         f"    <Microscope ID=\"Microscope:0\" Manufacturer=\"Leica\" Model=\"{microscope_model}\"/>",
-        f"    <Objective ID=\"Objective:0\" Description=\"{objective_name}\"/>",
+        f"    <Objective {' '.join(objective_attrs)}/>",
         "  </Instrument>",
         f"  <Image ID=\"Image:0\" Name=\"{image_name}\">",
         f"    <AcquisitionDate>{escape_xml_chars(str(acquisition_date))}</AcquisitionDate>",
