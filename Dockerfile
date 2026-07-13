@@ -10,13 +10,26 @@ RUN apt-get update && apt-get install -y libvips-dev && rm -rf /var/lib/apt/list
 
 # Copy project files
 COPY requirements-docker.txt /app/
-COPY main.py leica_converter.py ci_leica_converters_helpers.py ci_leica_converters_single_lif.py ci_leica_converters_ometiff.py ci_leica_converters_ometiff_rgb.py ReadLeicaLIF.py ReadLeicaLOF.py ReadLeicaXLEF.py ParseLeicaImageXML.py ParseLeicaImageXMLLite.py /app/
+COPY main.py \
+     leica_converter.py \
+     ci_leica_converters_helpers.py \
+     ci_leica_converters_single_lif.py \
+     ci_leica_converters_ometiff.py \
+     ci_leica_converters_ometiff_rgb.py \
+     ci_leica_converters_omezarr.py \
+     ReadLeicaLIF.py \
+     ReadLeicaLOF.py \
+     ReadLeicaXLEF.py \
+     ParseLeicaImageXML.py \
+     ParseLeicaImageXMLLite.py \
+     /app/
 
 # Create and activate virtual environment, install dependencies
 RUN python -m venv /opt/venv \
     && . /opt/venv/bin/activate \
     && pip install --upgrade pip \
-    && pip install -r requirements-docker.txt
+    && pip install -r requirements-docker.txt \
+    && python -c "import leica_converter; import ci_leica_converters_omezarr"
 
 # Ensure venv is used for all future commands
 ENV PATH="/opt/venv/bin:$PATH"
