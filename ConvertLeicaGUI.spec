@@ -1,7 +1,5 @@
 import os
 
-from PyInstaller.utils.hooks import collect_all
-
 
 block_cipher = None
 
@@ -10,11 +8,9 @@ ENTRY_SCRIPT = os.path.join(PROJECT_ROOT, 'ConvertLeicaQT.py')
 ICON_PATH = os.path.join(PROJECT_ROOT, 'favicon.ico')
 SPLASH_PATH = os.path.join(PROJECT_ROOT, 'images', 'convertleica-splash.png')
 
-pyqt6_datas, pyqt6_binaries, pyqt6_hiddenimports = collect_all('PyQt6')
-cv2_datas, cv2_binaries, cv2_hiddenimports = collect_all('cv2')
-numpy_datas, numpy_binaries, numpy_hiddenimports = collect_all('numpy')
-tifffile_datas, tifffile_binaries, tifffile_hiddenimports = collect_all('tifffile')
-imagecodecs_datas, imagecodecs_binaries, imagecodecs_hiddenimports = collect_all('imagecodecs')
+# tifffile loads the LZW implementation lazily. OME-Zarr compression uses
+# numcodecs.Blosc and does not require any additional imagecodecs modules.
+imagecodecs_hiddenimports = ['imagecodecs._imcd']
 
 added_datas = [
     ('ConvertLeicaQTHelp.html', '.'),
@@ -26,12 +22,13 @@ added_datas = [
 a = Analysis(
     [ENTRY_SCRIPT],
     pathex=[PROJECT_ROOT],
-    binaries=pyqt6_binaries + cv2_binaries + numpy_binaries + tifffile_binaries + imagecodecs_binaries,
-    datas=added_datas + pyqt6_datas + cv2_datas + numpy_datas + tifffile_datas + imagecodecs_datas,
+    binaries=[],
+    datas=added_datas,
     hiddenimports=[
         'ci_leica_converters_helpers',
         'ci_leica_converters_ometiff',
         'ci_leica_converters_ometiff_rgb',
+        'ci_leica_converters_omezarr',
         'ci_leica_converters_single_lif',
         'cideconvolve_io.ome_tiff_io',
         'leica_converter',
@@ -42,7 +39,7 @@ a = Analysis(
         'ReadLeicaLOF',
         'ReadLeicaXLEF',
         'encodings.idna',
-    ] + pyqt6_hiddenimports + cv2_hiddenimports + numpy_hiddenimports + tifffile_hiddenimports + imagecodecs_hiddenimports,
+    ] + imagecodecs_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -50,6 +47,27 @@ a = Analysis(
         'tkinter',
         '_tkinter',
         'PyQt5',
+        # Optional integrations visible in broad development environments;
+        # none are runtime dependencies of ConvertLeica.
+        'pandas',
+        'scipy',
+        'torch',
+        'pytest',
+        'matplotlib',
+        'PIL',
+        'IPython',
+        'dask',
+        'distributed',
+        'xarray',
+        'numba',
+        'llvmlite',
+        'cloudpickle',
+        'botocore',
+        'boto3',
+        's3fs',
+        'zmq',
+        'nbformat',
+        'jedi',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
