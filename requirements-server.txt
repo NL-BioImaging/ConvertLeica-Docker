@@ -3,7 +3,8 @@
 
 # Core conversion dependencies (same as requirements-docker.txt)
 numpy>=2.0.0
-pyvips==3.1.1
+tifffile>=2024.1.30
+imagecodecs>=2024.1.1
 opencv-python==4.13.0.90
 numcodecs>=0.12
 zarr>=3.0.0

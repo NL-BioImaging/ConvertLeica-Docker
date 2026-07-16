@@ -3,7 +3,8 @@
 # See also: requirements-server.txt and requirements-qt6ui.txt for other scenarios
 
 numpy>=2.0.0
-pyvips==3.1.1
+tifffile>=2024.1.30
+imagecodecs>=2024.1.1
 # Docker has no display server; the headless wheel provides cv2 without libGL.
 opencv-python-headless==4.13.0.90
 numcodecs>=0.12

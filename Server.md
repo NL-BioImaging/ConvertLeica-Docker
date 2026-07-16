@@ -10,7 +10,7 @@ Install with:
 pip install -r requirements-server.txt
 ```
 
-The server uses the same core dependencies as the converter (numpy, pyvips, opencv-python). All HTTP/server functionality uses Python standard library modules only.
+The server uses the same core dependencies as the converter (numpy, tifffile, imagecodecs, opencv-python). All HTTP/server functionality uses Python standard library modules only.
 
 ## Overview
 
@@ -125,8 +125,8 @@ This prevents corrupted files when the output folder is on an unreliable network
 
 With `--show_progress`, two progress bars are displayed during conversion:
 
-- **Processing bar** (`|███|`): Reading data, stitching tiles, creating pyvips image (0-100%)
-- **Saving bar** (`<▓▓▓>`): Writing TIFF to temp, copying to output (0-100%)
+- **Processing bar** (`|███|`): Reading data, stitching tiles, and creating the tiled pyramid (0-100%)
+- **Saving bar** (`<▓▓▓>`): Verified copying to the requested output locations (0-100%)
 
 The SSE stream from `/api/convert_leica` includes both progress bars in the streamed output.
 

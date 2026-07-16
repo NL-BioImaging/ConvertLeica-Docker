@@ -1,6 +1,7 @@
 import os
 import json
 import shutil
+import sys
 
 from ci_leica_converters_single_lif import convert_leica_to_singlelif
 from ci_leica_converters_omezarr import convert_leica_to_omezarr, convert_leica_rgb_to_omezarr
@@ -14,6 +15,39 @@ except Exception as exc:
     convert_leica_to_ometiff = None
     convert_leica_rgb_to_ometiff = None
     _OMETIFF_IMPORT_ERROR = exc
+
+
+def require_conversion_dependencies(output_format: str = "ome-tiff") -> None:
+    """Fail early with an actionable message when a conversion backend is incomplete."""
+    normalized = _normalize_output_format(output_format)
+    modules = ("numpy", "tifffile", "imagecodecs") if normalized == "ome-tiff" else (
+        "numpy", "zarr", "numcodecs"
+    )
+    missing = []
+    for module in modules:
+        try:
+            __import__(module)
+        except ModuleNotFoundError as exc:
+            if exc.name == module or str(exc.name).startswith(f"{module}."):
+                missing.append(module)
+            else:
+                raise
+    if missing:
+        requirements = (
+            "requirements-qt6ui.txt" if "PyQt6" in sys.modules
+            else "requirements-server.txt"
+        )
+        command = f'"{sys.executable}" -m pip install -r {requirements}'
+        raise RuntimeError(
+            f"Missing conversion dependencies: {', '.join(missing)}. "
+            f"Install them in this Python environment with:\n{command}"
+        )
+
+    if normalized == "ome-tiff" and _OMETIFF_IMPORT_ERROR is not None:
+        raise RuntimeError(
+            "The OME-TIFF conversion backend could not be loaded: "
+            f"{_OMETIFF_IMPORT_ERROR}"
+        ) from _OMETIFF_IMPORT_ERROR
 
 
 def _format_display_name(inputfile: str, save_child_name: str | None, fallback_name: str) -> str:
@@ -108,7 +142,7 @@ def _normalize_output_format(output_format: str) -> str:
 def _require_ometiff_support() -> None:
     if convert_leica_to_ometiff is None or convert_leica_rgb_to_ometiff is None:
         raise RuntimeError(
-            "OME-TIFF conversion support is unavailable in this environment. Install the pyvips-backed TIFF dependencies."
+            "OME-TIFF conversion support is unavailable in this environment. Install tifffile and imagecodecs."
         ) from _OMETIFF_IMPORT_ERROR
 
 
@@ -411,6 +445,8 @@ def convert_leica(
         Returns an empty JSON array string ("[]") if no conversion is applicable or an error occurs.
     """
     created_filename = None
+    output_format = _normalize_output_format(output_format)
+    require_conversion_dependencies(output_format)
 
     try:
         if show_progress:
@@ -421,7 +457,6 @@ def convert_leica(
                 processing_msg += f" (UUID: {image_uuid})"
             print(processing_msg + "...") 
 
-        output_format = _normalize_output_format(output_format)
         metadata = read_image_metadata(inputfile, image_uuid)
         filetype = metadata.get("filetype", "").lower()
         xs = metadata.get("xs", 0)

@@ -73,8 +73,8 @@ Converting to OME-TIFF: |██████████████████�
   Saving: <▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓> 100.0% - Copying to output
 ```
 
-- **Processing bar** (`|███|`): Data reading, stitching, pyvips image creation
-- **Saving bar** (`<▓▓▓>`): TIFF writing and file copying phases
+- **Processing bar** (`|███|`): Data reading, stitching, and tiled-pyramid creation
+- **Saving bar** (`<▓▓▓>`): Verified copying to the requested output locations
 ## Configuration and defaults
 
 - Initial root folder: If `server.ROOT_DIR` exists and is accessible, it’s used as the starting point. Otherwise the current working directory.
@@ -109,7 +109,8 @@ Core runtime for previews and conversion:
 
 - numpy
 - opencv-python
-- pyvips
+- tifffile
+- imagecodecs
 
 GUI runtime:
 

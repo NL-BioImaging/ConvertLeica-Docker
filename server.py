@@ -6,7 +6,7 @@ import webbrowser
 import threading
 from ci_leica_converters_helpers import read_leica_file,get_image_metadata,get_image_metadata_LOF
 from CreatePreview import create_preview_base64_image, create_preview_image
-from leica_converter import convert_leica
+from leica_converter import convert_leica, require_conversion_dependencies
 import sys
 import tempfile
 
@@ -252,6 +252,7 @@ class MyHTTPRequestHandler(SimpleHTTPRequestHandler):
         post = self.rfile.read(content_length)
 
         try:
+            require_conversion_dependencies("ome-tiff")
             data = json.loads(post.decode())
             inp = data.get("filePath")
             uuid_ = data.get("image_uuid")
@@ -377,6 +378,7 @@ class MyHTTPRequestHandler(SimpleHTTPRequestHandler):
             self.send_error(500, str(e))
 
 def run(server_class=ThreadingHTTPServer, handler_class=MyHTTPRequestHandler, port=DEFAULT_PORT):
+    require_conversion_dependencies("ome-tiff")
     server_address = ("", port)
     httpd = server_class(server_address, handler_class)
     print(f"Starting server on http://localhost:{port}")

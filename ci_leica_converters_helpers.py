@@ -68,19 +68,6 @@ except ImportError:  # pragma: no cover - fallback for script usage
     from ReadLeicaLOF import read_leica_lof
     from ReadLeicaXLEF import read_leica_xlef
 
-dtype_to_format = {
-    np.uint8: "uchar",
-    np.int8: "char",
-    np.uint16: "ushort",
-    np.int16: "short",
-    np.uint32: "uint",
-    np.int32: "int",
-    np.float32: "float",
-    np.float64: "double",
-    np.complex64: "complex",
-    np.complex128: "dpcomplex",
-}
-
 logger = logging.getLogger(__name__)
 
 
@@ -1189,28 +1176,24 @@ def robust_file_copy(src_path: str, dest_path: str, max_retries: int = 10,
     return False
 
 
-def safe_tiffsave(img, out_path: str, altoutputfolder: str | None = None,
-                  show_progress: bool = False, progress_callback: callable = None,
-                  tempfolder: str | None = None,
-                  **tiffsave_kwargs) -> str:
+def finalize_tiff_output(temp_path: str, out_path: str,
+                         altoutputfolder: str | None = None,
+                         show_progress: bool = False,
+                         progress_callback: callable = None) -> str:
     """
-    Save a pyvips image to a TIFF file using a temp-first approach for reliability.
+    Copy an already-written local TIFF to its final destinations reliably.
     
     This function:
-    1. Saves the image to a temporary file in the system temp directory (or custom tempfolder)
-    2. Copies the temp file to out_path with verification and retry logic
-    3. If altoutputfolder is provided, copies temp file there too
-    4. Removes the temp file only after all copies are verified
+    The caller owns ``temp_path`` and is responsible for deleting it. This
+    helper verifies the file, performs retrying copies, and optionally creates
+    the alternate output copy.
     
     Parameters:
-    - img: pyvips.Image object to save
+    - temp_path: Complete local TIFF produced by the image writer
     - out_path: Final destination path for the TIFF file
     - altoutputfolder: Optional alternative output folder for a second copy
     - show_progress: If True, display console progress bar during save
-    - progress_callback: Optional callable(phase: str, percent: float) for programmatic progress
-                        phase is one of: "writing", "copying", "copying_alt"
-    - tempfolder: Optional custom temp folder path. If None, uses system temp directory.
-    - **tiffsave_kwargs: Additional arguments passed to img.tiffsave()
+    - progress_callback: Optional callable(phase: str, percent: float)
     
     Returns:
     - The filename (basename) of the saved file
@@ -1218,94 +1201,30 @@ def safe_tiffsave(img, out_path: str, altoutputfolder: str | None = None,
     Raises:
     - Various exceptions if saving or copying fails after all retries
     """
-    # Generate a unique temp file path in system temp directory or custom tempfolder
-    temp_dir = tempfolder if tempfolder else tempfile.gettempdir()
-    # Ensure temp directory exists
-    os.makedirs(temp_dir, exist_ok=True)
-    temp_filename = f"{uuid_module.uuid4()}.tmp.tiff"
-    temp_path = os.path.join(temp_dir, temp_filename)
-    
     ome_name = os.path.basename(out_path)
-    has_alt = altoutputfolder is not None
-    
-    # Progress tracking for pyvips signals
-    last_reported_percent = [-1]  # Use list to allow modification in nested function
-    saving_completed = [False]  # Track if we've already printed the final saving line
-    
-    def _report_progress(phase: str, percent: float):
-        """Internal helper to report progress via both callback and console."""
-        if progress_callback is not None:
-            try:
-                progress_callback(phase, percent)
-            except Exception:
-                pass  # Don't let callback errors break the save
-        
-        if show_progress and phase == "writing":
-            # Only show the Saving progress bar for the writing phase
-            # Copying phases have their own progress bars via robust_file_copy
-            is_final = percent >= 100 and not saving_completed[0]
-            print_save_progress_bar(percent, prefix="Saving:", suffix="Writing TIFF", final_call=is_final)
-            if is_final:
-                saving_completed[0] = True
-    
-    try:
-        # Set up pyvips progress reporting
-        def on_eval(image, progress):
-            # Only report every 2% to avoid too many updates, and skip if already completed
-            if saving_completed[0]:
-                return
-            current_percent = int(progress.percent)
-            if current_percent >= last_reported_percent[0] + 2 or current_percent >= 100:
-                last_reported_percent[0] = current_percent
-                _report_progress("writing", progress.percent)
-        
-        img.set_progress(True)
-        img.signal_connect("eval", on_eval)
-        
-        if show_progress:
-            _report_progress("writing", 0)
-        
-        # Save to temp location first
-        img.tiffsave(temp_path, **tiffsave_kwargs)
-        
-        # Ensure 100% is reported for writing phase (only if not already done by callback)
-        if not saving_completed[0]:
-            _report_progress("writing", 100)
-        
-        # Verify temp file was created
-        if not os.path.exists(temp_path):
-            raise OSError(f"Temp file was not created: {temp_path}")
-        
-        temp_size = os.path.getsize(temp_path)
-        if temp_size == 0:
-            raise OSError(f"Temp file is empty: {temp_path}")
-        
-        # Copy to primary destination with retry logic and progress display
-        robust_file_copy(temp_path, out_path, show_progress=show_progress, 
-                        prefix="Copying output:")
-        
-        # Copy to alternative destination if specified
-        if altoutputfolder:
-            alt_out_path = os.path.join(altoutputfolder, ome_name)
-            robust_file_copy(temp_path, alt_out_path, show_progress=show_progress,
-                           prefix="Copying alt output:")
-        
-        # Print total elapsed time if we were showing progress
-        if show_progress:
-            total_elapsed = get_total_elapsed_time()
-            print(f"  Total time: {format_elapsed_time(total_elapsed)}")
-        
-        return ome_name
-        
-    finally:
-        # Clean up temp file
-        if os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-                if show_progress:
-                    print(f"  Cleaned up temp output file")
-            except OSError as e:
-                print(f"\nWarning: Could not remove temporary TIFF file {temp_path}: {e}")
+    if not os.path.isfile(temp_path):
+        raise OSError(f"Temporary TIFF was not created: {temp_path}")
+    if os.path.getsize(temp_path) == 0:
+        raise OSError(f"Temporary TIFF is empty: {temp_path}")
+
+    if progress_callback is not None:
+        try:
+            progress_callback("copying", 0)
+        except Exception:
+            pass
+    robust_file_copy(temp_path, out_path, show_progress=show_progress, prefix="Copying output:")
+    if altoutputfolder:
+        alt_out_path = os.path.join(altoutputfolder, ome_name)
+        robust_file_copy(temp_path, alt_out_path, show_progress=show_progress, prefix="Copying alt output:")
+    if progress_callback is not None:
+        try:
+            progress_callback("copying", 100)
+        except Exception:
+            pass
+    if show_progress:
+        total_elapsed = get_total_elapsed_time()
+        print(f"  Total time: {format_elapsed_time(total_elapsed)}")
+    return ome_name
 
 
 # -----------------------------------------------------------------------------

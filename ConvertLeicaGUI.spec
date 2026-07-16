@@ -13,6 +13,8 @@ SPLASH_PATH = os.path.join(PROJECT_ROOT, 'images', 'convertleica-splash.png')
 pyqt6_datas, pyqt6_binaries, pyqt6_hiddenimports = collect_all('PyQt6')
 cv2_datas, cv2_binaries, cv2_hiddenimports = collect_all('cv2')
 numpy_datas, numpy_binaries, numpy_hiddenimports = collect_all('numpy')
+tifffile_datas, tifffile_binaries, tifffile_hiddenimports = collect_all('tifffile')
+imagecodecs_datas, imagecodecs_binaries, imagecodecs_hiddenimports = collect_all('imagecodecs')
 
 added_datas = [
     ('ConvertLeicaQTHelp.html', '.'),
@@ -24,10 +26,15 @@ added_datas = [
 a = Analysis(
     [ENTRY_SCRIPT],
     pathex=[PROJECT_ROOT],
-    binaries=pyqt6_binaries + cv2_binaries + numpy_binaries,
-    datas=added_datas + pyqt6_datas + cv2_datas + numpy_datas,
+    binaries=pyqt6_binaries + cv2_binaries + numpy_binaries + tifffile_binaries + imagecodecs_binaries,
+    datas=added_datas + pyqt6_datas + cv2_datas + numpy_datas + tifffile_datas + imagecodecs_datas,
     hiddenimports=[
         'ci_leica_converters_helpers',
+        'ci_leica_converters_ometiff',
+        'ci_leica_converters_ometiff_rgb',
+        'ci_leica_converters_single_lif',
+        'cideconvolve_io.ome_tiff_io',
+        'leica_converter',
         'CreatePreview',
         'ParseLeicaImageXML',
         'ParseLeicaImageXMLLite',
@@ -35,16 +42,11 @@ a = Analysis(
         'ReadLeicaLOF',
         'ReadLeicaXLEF',
         'encodings.idna',
-    ] + pyqt6_hiddenimports + cv2_hiddenimports + numpy_hiddenimports,
+    ] + pyqt6_hiddenimports + cv2_hiddenimports + numpy_hiddenimports + tifffile_hiddenimports + imagecodecs_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        'pyvips',
-        'leica_converter',
-        'ci_leica_converters_ometiff',
-        'ci_leica_converters_ometiff_rgb',
-        'ci_leica_converters_single_lif',
         'tkinter',
         '_tkinter',
         'PyQt5',

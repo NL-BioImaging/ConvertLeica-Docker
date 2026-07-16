@@ -7,7 +7,7 @@ print(f'Unicode codepoints: {[hex(ord(c)) for c in um]}')
 print(f'UTF-8 bytes: {um.encode("utf-8")}')
 print(f'Length: {len(um)} chars, {len(um.encode("utf-8"))} bytes')
 
-# Simulate what pyvips should see
+# Simulate the XML description passed to the TIFF writer
 xml_snippet = f'PhysicalSizeXUnit="{um}"'
 print(f'\nXML snippet: {xml_snippet}')
 print(f'Bytes: {xml_snippet.encode("utf-8")}')
@@ -18,9 +18,7 @@ print(f'\n--- Encoding comparison ---')
 print(f'Good (correct): "{um}"')
 print(f'Bad (double-encoded): "{bad}"')
 
-# The fix: pyvips expects a Python string, NOT bytes
-# Before: img.set_type(..., ome_xml.encode("utf-8"))  <- WRONG, causes double encoding
-# After:  img.set_type(..., ome_xml)  <- CORRECT, pyvips handles encoding
+# The TIFF writer receives Unicode XML and performs UTF-8 serialization.
 
 print(f'\n--- Verification ---')
 if um == 'µm':

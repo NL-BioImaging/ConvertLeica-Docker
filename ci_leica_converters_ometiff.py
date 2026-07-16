@@ -8,27 +8,21 @@ from html import escape as escape_xml_chars  # More robust XML escaping
 import gc
 import re
 import math # Added for math.ceil
-import sys
+
+from cideconvolve_io import TiledOmeTiffSink
 
 # Import helpers from the dedicated module
 from ci_leica_converters_helpers import (
-    dtype_to_format,
     print_progress_bar,
     read_image_metadata,
     color_name_to_decimal,
     decimal_to_ome_color,
     validate_metadata,
     metadata_schema, # This already contains the parsed schema
-    safe_tiffsave,
+    finalize_tiff_output,
     prepare_temp_source,
     cleanup_temp_source
 )
-
-if sys.platform.startswith("win"):
-    vips_bin_dir = r"C:\bin\vips\bin"
-    os.environ["PATH"] = os.pathsep.join((vips_bin_dir, os.environ["PATH"]))
-
-import pyvips
 
 # -----------------------------------------------------------------------------
 # Low-level reader - pull a range of rows out of a *single* channel / Z plane
@@ -523,9 +517,6 @@ def convert_leica_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
     - save_child_name: Optional override for the output filename (without extension).
     """
 
-    if pyvips is None:
-        raise RuntimeError("pyvips is required for OME-TIFF conversion, but could not be imported.")
-
     try:
         meta = read_image_metadata(inputfile, image_uuid)
     except (ValueError, FileNotFoundError, IndexError, KeyError, json.JSONDecodeError) as e:
@@ -621,8 +612,6 @@ def convert_leica_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
 
     bits = 16 if max(res) > 8 else 8
     dtype = np.uint16 if bits == 16 else np.uint8
-    vips_format = dtype_to_format[dtype]
-
     # --- Prepare temp source for robust reading from network files ---
     temp_source_cleanup = None
     try:
@@ -660,7 +649,8 @@ def convert_leica_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
     final_planar_height = channels * zs * ts * canvas_ys
     mmap_path = ""
     planar = None
-    img = None
+    temp_tiff_path = os.path.join(tempfolder or tempfile.gettempdir(), f"{uuid.uuid4()}.tmp.ome.tiff")
+    sink = None
     try:
         with tempfile.NamedTemporaryFile(suffix=".planar.mmap", delete=False) as tmp_f:
             mmap_path = tmp_f.name
@@ -851,13 +841,7 @@ def convert_leica_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
         planar.flush()
 
         if show_progress:
-            print_progress_bar(90, prefix="Converting to OME-TIFF:", suffix="Creating pyvips image")
-
-        img = pyvips.Image.new_from_memory(planar, canvas_xs, final_planar_height, 1, vips_format)
-
-        del planar
-        planar = None
-        gc.collect()
+            print_progress_bar(90, prefix="Converting to OME-TIFF:", suffix="Building tiled pyramid")
 
         meta["xs"] = canvas_xs
         meta["ys"] = canvas_ys
@@ -866,39 +850,35 @@ def convert_leica_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
             print_progress_bar(95, prefix="Converting to OME-TIFF:", suffix="Embedding OME-XML")
 
         ome_xml = generate_ome_xml(meta, ome_name, include_original_metadata=include_original_metadata)
-        img = img.copy()
-        # pyvips expects a string, not bytes - it handles the encoding internally
-        img.set_type(pyvips.GValue.gstr_type, "image-description", ome_xml)
+        level0_shape = (ts, channels, zs, canvas_ys, canvas_xs)
+        sink = TiledOmeTiffSink(
+            temp_tiff_path,
+            shape=level0_shape,
+            dtype=dtype,
+            ome_xml=ome_xml,
+            level0=planar.reshape(level0_shape),
+            temp_dir=tempfolder,
+            tile_yx=(512, 512),
+            compression="lzw",
+        )
+        sink.build_pyramids()
+        sink.close()
+        sink = None
 
         if show_progress:
             print_progress_bar(100, prefix="Converting to OME-TIFF:", suffix="Processing complete", final_call=True)
 
-        # Use safe_tiffsave for robust saving to potentially network-mounted destinations
-        # This has its own progress bar for the save phase
-        safe_tiffsave(
-            img, out_path, altoutputfolder=altoutputfolder,
+        finalize_tiff_output(
+            temp_tiff_path, out_path,
+            altoutputfolder=altoutputfolder,
             show_progress=show_progress,
-            tempfolder=tempfolder,
-            tile=True, tile_width=512, tile_height=512,
-            pyramid=True, subifd=True, compression="lzw",
-            page_height=canvas_ys,  # Use final plane height (after global swap) for IFD separation
-            bigtiff=True
         )
-
-        img = None
         gc.collect()
 
         return ome_name
 
-    except pyvips.Error as e:
-        print(f"\nError during pyvips processing: {e}")
-        img = None
-        planar = None
-        gc.collect()
-        return None
     except MemoryError:
         print("\nError: Insufficient memory to process the image.")
-        img = None
         planar = None
         gc.collect()
         return None
@@ -906,7 +886,6 @@ def convert_leica_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
         import traceback
         print(f"\nAn unexpected error occurred during OME-TIFF conversion:")
         print(traceback.format_exc())
-        img = None
         planar = None
         gc.collect()
         return None
@@ -914,13 +893,18 @@ def convert_leica_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
         gc.collect()
         if planar is not None:
             del planar
-        if img is not None:
-            del img
+        if sink is not None:
+            sink.abort()
         if mmap_path and os.path.exists(mmap_path):
             try:
                 os.remove(mmap_path)
             except OSError as e:
                 print(f"\nWarning: Could not remove temporary file {mmap_path}: {e}")
+        if os.path.exists(temp_tiff_path):
+            try:
+                os.remove(temp_tiff_path)
+            except OSError as e:
+                print(f"\nWarning: Could not remove temporary TIFF {temp_tiff_path}: {e}")
         # Clean up temp source file
         cleanup_temp_source(temp_source_cleanup, show_progress=show_progress)
 

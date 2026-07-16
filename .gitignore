@@ -10,3 +10,4 @@ pyinstaller-build.*
 build/
 dist/
 old/
+localdata/

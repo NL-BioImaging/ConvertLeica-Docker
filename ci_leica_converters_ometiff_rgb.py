@@ -7,25 +7,19 @@ import gc
 import re
 from html import escape as escape_xml_chars
 import math # Added for math.ceil
-import sys
+
+from cideconvolve_io import TiledRgbOmeTiffSink
 
 # Import helpers from the dedicated module
 from ci_leica_converters_helpers import (
-    dtype_to_format,
     print_progress_bar,
     read_image_metadata,
     validate_metadata,
     metadata_schema, # This already contains the parsed schema
-    safe_tiffsave,
+    finalize_tiff_output,
     prepare_temp_source,
     cleanup_temp_source
 )
- 
-if sys.platform.startswith("win"):
-    vips_bin_dir = r"C:\bin\vips\bin"
-    os.environ["PATH"] = os.pathsep.join((vips_bin_dir, os.environ["PATH"]))
-
-import pyvips 
  
  # ----------------------------------------------------------------------------- 
  # Low-level reader - pull a *single* interleaved RGB Z/T plane 
@@ -241,7 +235,7 @@ def generate_ome_xml(meta: dict, filename: str, *, include_original_metadata: bo
         f'Type="{pixel_type}"', # Use determined pixel type
         f'SignificantBits="{sbits}"', # Add SignificantBits attribute
         f'SizeX="{xs}" SizeY="{ys}" SizeZ="{zs}"',
-        'SizeC="1"',                        # ⇦ one logical channel
+        'SizeC="3"',                        # three interleaved samples in one logical RGB channel
         f'SizeT="{ts}"',
         f'PhysicalSizeX="{xres_um}" PhysicalSizeY="{yres_um}" PhysicalSizeZ="{zres_um}"',
         'PhysicalSizeXUnit="µm" PhysicalSizeYUnit="µm" PhysicalSizeZUnit="µm"',
@@ -319,9 +313,6 @@ def convert_leica_rgb_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
     - tempfolder: Optional custom temp folder for intermediate files. If None, uses system temp.
     - save_child_name: Optional override for the output filename (without extension).
     """
-
-    if pyvips is None:
-        raise RuntimeError("pyvips is required for OME-TIFF conversion, but could not be imported.")
 
     try:
         meta = read_image_metadata(inputfile, image_uuid)
@@ -404,8 +395,6 @@ def convert_leica_rgb_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
     else:
         bits = 8
         dtype = np.uint8
-    vips_format = dtype_to_format[dtype]
-
     # --- Prepare temp source for robust reading from network files ---
     temp_source_cleanup = None
     try:
@@ -449,7 +438,8 @@ def convert_leica_rgb_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
     final_height = zs * ts * ys # ys is potentially stitched_ys
     mmap_path = ""
     planar = None
-    img = None
+    temp_tiff_path = os.path.join(tempfolder or tempfile.gettempdir(), f"{uuid.uuid4()}.tmp.ome.tiff")
+    sink = None
     try:
         # Create a memmap file for the entire image stack (T*Z*Y, X, C)
         with tempfile.NamedTemporaryFile(suffix=".rgb_planar.mmap", delete=False) as tmp_f:
@@ -622,61 +612,46 @@ def convert_leica_rgb_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
 
                 plane_idx += 1
 
-        planar.flush() # Ensure all data is written to the memmap file before pyvips reads it
+        planar.flush()
 
         if show_progress:
-            print_progress_bar(90, prefix="Converting RGB to OME-TIFF:", suffix="Creating pyvips image")
-
-        # Create pyvips image from the complete memmap array
-        # Height = final_height (zs * ts * stitched_ys), Width = stitched_xs, Bands = 3
-        img = pyvips.Image.new_from_memory(planar, xs, final_height, 3, vips_format)
-
-        # Explicitly delete the memmap object reference BEFORE deleting the file
-        del planar
-        planar = None
-        gc.collect() # Encourage garbage collection
+            print_progress_bar(90, prefix="Converting RGB to OME-TIFF:", suffix="Building tiled pyramid")
 
         if show_progress:
             print_progress_bar(95, prefix="Converting RGB to OME-TIFF:", suffix="Embedding OME-XML")
 
         # Generate OME-XML specifically for this RGB image (using updated meta['xs'], meta['ys'])
         ome_xml = generate_ome_xml(meta, ome_name, include_original_metadata=include_original_metadata)
-        img = img.copy()
-        img.set_type(pyvips.GValue.gstr_type, "image-description", ome_xml.encode("utf-8"))
+        level0_shape = (ts, zs, ys, xs, 3)
+        sink = TiledRgbOmeTiffSink(
+            temp_tiff_path,
+            shape=level0_shape,
+            dtype=dtype,
+            ome_xml=ome_xml,
+            level0=planar.reshape(level0_shape),
+            temp_dir=tempfolder,
+            tile_yx=(512, 512),
+            compression="lzw",
+        )
+        sink.build_pyramids()
+        sink.close()
+        sink = None
 
         if show_progress:
             print_progress_bar(100, prefix="Converting RGB to OME-TIFF:", suffix="Processing complete", final_call=True)
 
-        # Use safe_tiffsave for robust saving to potentially network-mounted destinations
-        # This has its own progress bar for the save phase
-        # Save as tiled, pyramidal OME-TIFF
-        # page_height=ys ensures each Z/T plane becomes a separate IFD (uses stitched_ys)
-        safe_tiffsave(
-            img, out_path, altoutputfolder=altoutputfolder,
+        finalize_tiff_output(
+            temp_tiff_path, out_path,
+            altoutputfolder=altoutputfolder,
             show_progress=show_progress,
-            tempfolder=tempfolder,
-            tile=True, tile_width=512, tile_height=512,
-            pyramid=True, subifd=True, compression="lzw",  # Use LZW for RGB
-            page_height=ys,  # Critical for correct Z/T plane separation (uses stitched_ys)
-            bigtiff=True
         )
-
-        img = None # Release pyvips image object
-        # No need to delete mmap_path here, finally block handles it
 
         gc.collect()
 
         return ome_name
 
-    except pyvips.Error as e:
-        print(f"\nError during pyvips processing for RGB image: {e}")
-        img = None
-        planar = None
-        gc.collect()
-        return None
     except MemoryError:
         print("\nError: Insufficient memory to process the RGB image.")
-        img = None
         planar = None
         gc.collect()
         return None
@@ -684,7 +659,6 @@ def convert_leica_rgb_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
         import traceback
         print(f"\nAn unexpected error occurred during RGB OME-TIFF conversion:")
         print(traceback.format_exc())
-        img = None
         planar = None
         gc.collect()
         return None
@@ -694,9 +668,8 @@ def convert_leica_rgb_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
         if planar is not None:
             del planar # Release lock if not already deleted
             planar = None
-        if img is not None:
-            del img
-            img = None
+        if sink is not None:
+            sink.abort()
     
         gc.collect() # Force garbage collection again before file deletion
 
@@ -705,6 +678,11 @@ def convert_leica_rgb_to_ometiff(inputfile: str, *, image_uuid: str = "n/a",
                 os.remove(mmap_path)
             except OSError as e:
                 print(f"\nWarning: Could not remove temporary file {mmap_path}: {e}") # Report error if deletion fails
+        if os.path.exists(temp_tiff_path):
+            try:
+                os.remove(temp_tiff_path)
+            except OSError as e:
+                print(f"\nWarning: Could not remove temporary TIFF {temp_tiff_path}: {e}")
         
         # Clean up temp source file
         cleanup_temp_source(temp_source_cleanup, show_progress=show_progress)

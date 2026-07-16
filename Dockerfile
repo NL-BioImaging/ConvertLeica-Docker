@@ -5,8 +5,9 @@ FROM python:3.13-slim
 # Set working directory
 WORKDIR /app
 
-# Install system libvips (for vips support in Python)
-RUN apt-get update && apt-get install -y libvips-dev && rm -rf /var/lib/apt/lists/*
+# The current OpenCV headless wheel links libxcb on Debian slim.
+RUN apt-get update && apt-get install -y --no-install-recommends libxcb1 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy project files
 COPY requirements-docker.txt /app/
@@ -23,6 +24,7 @@ COPY main.py \
      ParseLeicaImageXML.py \
      ParseLeicaImageXMLLite.py \
      /app/
+COPY cideconvolve_io /app/cideconvolve_io
 
 # Create and activate virtual environment, install dependencies
 RUN python -m venv /opt/venv \

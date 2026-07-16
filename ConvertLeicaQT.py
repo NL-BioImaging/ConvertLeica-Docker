@@ -35,12 +35,13 @@ import tempfile
 import re
 
 
-def _get_convert_leica():
+def _get_convert_leica(output_format: str = "ome-tiff"):
     try:
-        from leica_converter import convert_leica as convert_func
+        from leica_converter import convert_leica as convert_func, require_conversion_dependencies
+        require_conversion_dependencies(output_format)
     except Exception as exc:
         raise RuntimeError(
-            "Conversion support is unavailable in this build. Install the optional conversion backend to enable OME-TIFF and OME-Zarr export."
+            f"Conversion support is unavailable: {exc}"
         ) from exc
     return convert_func
 
@@ -216,7 +217,7 @@ class ConvertWorker(QThread):
         orig_stdout = sys.stdout
         sys.stdout = StdoutSignalEmitter(self.progress, self.progressParsed)
         try:
-            convert_leica = _get_convert_leica()
+            convert_leica = _get_convert_leica(self.output_format)
             result_json = convert_leica(
                 inputfile=self.inputfile,
                 image_uuid=self.image_uuid,
@@ -436,7 +437,12 @@ class ConvertLeicaApp(QMainWindow):
         # Metadata summary under preview
         self.meta_text = QTextEdit(); self.meta_text.setReadOnly(True)
         self.meta_text.setPlaceholderText("Image metadata will appear here")
-        self.meta_text.setMaximumHeight(140)
+        # The summary contains at most eleven standard lines. Size the panel from
+        # the active font so those lines fit without a vertical scrollbar, also
+        # when Windows display/font scaling is enabled.
+        metadata_height = self.meta_text.fontMetrics().lineSpacing() * 11 + 20
+        self.meta_text.setMinimumHeight(metadata_height)
+        self.meta_text.setMaximumHeight(metadata_height)
         right_right_layout.addWidget(self.meta_text)
 
     # Progress bar section
@@ -770,7 +776,7 @@ class ConvertLeicaApp(QMainWindow):
             QMessageBox.warning(self, "Missing output", "Please choose an output folder.")
             return
         try:
-            _get_convert_leica()
+            _get_convert_leica(output_format)
         except RuntimeError as exc:
             QMessageBox.warning(self, "Conversion unavailable", str(exc))
             self.append_log(str(exc))
