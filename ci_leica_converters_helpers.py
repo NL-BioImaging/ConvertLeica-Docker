@@ -39,9 +39,9 @@ Error handling
 
 Networking note
 ---------------
-On import, the OME-XML schema is downloaded (parse_ome_xsd) to build
-`metadata_schema` used by validate_metadata for normalizing certain string
-fields. If offline, callers can ignore `metadata_schema` and skip validation.
+Importing this module does not access the network. The OME enum values used by
+the converters are bundled below. Call parse_ome_xsd(...) explicitly if a
+caller needs to inspect a different or newer remote schema.
 """
 
 import os
@@ -1365,4 +1365,59 @@ def cleanup_temp_source(cleanup_path: str | None, show_progress: bool = False) -
 
 
 xsd_url = "http://www.openmicroscopy.org/Schemas/OME/2016-06/ome.xsd"
-metadata_schema = parse_ome_xsd(xsd_url)
+
+# Only these four OME enum fields are validated by the converters. Keeping the
+# OME 2016-06 values locally makes CLI and GUI startup deterministic offline and
+# avoids downloading an XSD (plus its imports) every time this module is loaded.
+metadata_schema = {
+    "Immersion": {
+        "type": "string",
+        "values": ["Oil", "Water", "WaterDipping", "Air", "Multi", "Glycerol", "Other"],
+    },
+    "IlluminationType": {
+        "type": "string",
+        "values": ["Transmitted", "Epifluorescence", "Oblique", "NonLinear", "Other"],
+    },
+    "AcquisitionMode": {
+        "type": "string",
+        "values": [
+            "WideField",
+            "LaserScanningConfocalMicroscopy",
+            "SpinningDiskConfocal",
+            "SlitScanConfocal",
+            "MultiPhotonMicroscopy",
+            "StructuredIllumination",
+            "SingleMoleculeImaging",
+            "TotalInternalReflection",
+            "FluorescenceLifetime",
+            "SpectralImaging",
+            "FluorescenceCorrelationSpectroscopy",
+            "NearFieldScanningOpticalMicroscopy",
+            "SecondHarmonicGenerationImaging",
+            "PALM",
+            "STORM",
+            "STED",
+            "TIRF",
+            "FSM",
+            "LCM",
+            "Other",
+            "BrightField",
+            "SweptFieldConfocal",
+            "SPIM",
+        ],
+    },
+    "ContrastMethod": {
+        "type": "string",
+        "values": [
+            "Brightfield",
+            "Phase",
+            "DIC",
+            "HoffmanModulation",
+            "ObliqueIllumination",
+            "PolarizedLight",
+            "Darkfield",
+            "Fluorescence",
+            "Other",
+        ],
+    },
+}
