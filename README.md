@@ -2,6 +2,33 @@
 
 ConvertLeica-Docker is a toolset and web interface for converting Leica LIF, LOF, and XLEF microscopy image files to OME-TIFF or OME-Zarr, with special handling for certain file types and image configurations. It is designed for command-line, web-based, and Qt desktop workflows, supporting batch conversion and interactive browsing/conversion of large microscopy datasets.
 
+The reusable Leica file-browser modules are also distributed separately as
+`convertleica-file-browser`. This lets Python applications consume the readers
+without copying source files from this repository:
+
+```bash
+pip install convertleica-file-browser
+```
+
+```python
+from convertleica_file_browser.ci_leica_converters_helpers import read_leica_file
+
+contents_json = read_leica_file("example.lif")
+```
+
+Preview generation additionally needs OpenCV and can be installed with
+`pip install "convertleica-file-browser[preview]"`.
+
+Package versions are derived from this repository's Git tags. Publishing a
+GitHub Release builds and publishes the matching wheel and source distribution
+to PyPI, alongside the Docker image release workflow.
+
+Before the first release, configure a PyPI Trusted Publisher with owner
+`NL-BioImaging`, repository `ConvertLeica-Docker`, workflow
+`publish-to-pypi.yml`, and GitHub environment `pypi`. Create the matching
+GitHub environment and protect it with required reviewer approval. No PyPI API
+token is needed.
+
 ---
 
 ## Table of Contents

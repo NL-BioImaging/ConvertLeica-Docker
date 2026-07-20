@@ -11,3 +11,5 @@ build/
 dist/
 old/
 localdata/
+*.egg-info/
+package-dist-check*/

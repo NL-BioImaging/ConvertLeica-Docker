@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=77", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "convertleica-file-browser"
+dynamic = ["version"]
+description = "Read and browse nested images in Leica LIF, LOF, and XLEF files"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [
+  { name = "NL-BioImaging" },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Scientific/Engineering :: Image Processing",
+]
+dependencies = [
+  "numpy>=2.0.0",
+]
+
+[project.optional-dependencies]
+preview = ["opencv-python-headless>=4.13.0.90"]
+
+[project.urls]
+Homepage = "https://github.com/NL-BioImaging/ConvertLeica-Docker"
+Repository = "https://github.com/NL-BioImaging/ConvertLeica-Docker"
+Issues = "https://github.com/NL-BioImaging/ConvertLeica-Docker/issues"
+
+[tool.setuptools]
+packages = ["convertleica_file_browser"]
+py-modules = [
+  "CreatePreview",
+  "ParseLeicaImageXML",
+  "ParseLeicaImageXMLLite",
+  "ReadLeicaLIF",
+  "ReadLeicaLOF",
+  "ReadLeicaXLEF",
+  "ci_leica_converters_helpers",
+]
+
+[tool.setuptools_scm]
+version_scheme = "guess-next-dev"
+local_scheme = "no-local-version"
