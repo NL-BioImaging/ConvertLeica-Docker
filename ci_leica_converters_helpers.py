@@ -39,9 +39,9 @@ Error handling
 
 Networking note
 ---------------
-Importing this module does not access the network. The OME enum values used by
-the converters are bundled below. Call parse_ome_xsd(...) explicitly if a
-caller needs to inspect a different or newer remote schema.
+Importing this module does not access the network. The OME 2016-06 schema used
+by the converters is bundled with the package. parse_ome_xsd(path) also accepts
+another local schema path when callers need a different version.
 """
 
 import os
@@ -52,7 +52,8 @@ import time
 import uuid as uuid_module
 import numpy as np
 import xml.etree.ElementTree as ET
-import urllib.request
+from importlib import resources
+from pathlib import Path
 import math
 import logging
 from typing import Dict, List, Tuple
@@ -988,32 +989,51 @@ def decimal_to_ome_color(rgb_int: int, alpha: int = 255) -> int:
 
 
 XS_NS = {"xs": "http://www.w3.org/2001/XMLSchema"}
+OME_XSD_RESOURCE = resources.files("convertleica_file_browser").joinpath("ome.xsd")
 
 
-def _download(url: str) -> str:
-    tmp = tempfile.NamedTemporaryFile(delete=False)
-    urllib.request.urlretrieve(url, tmp.name)
-    return tmp.name
-
-
-def _load_schema_tree(url: str, seen: set[str]) -> list[ET.ElementTree]:
-    if url in seen:
+def _load_schema_tree(
+    source: str | os.PathLike,
+    seen: set[str],
+) -> list[ET.ElementTree]:
+    source_path = Path(source).resolve()
+    source_key = str(source_path)
+    if source_key in seen:
         return []
-    seen.add(url)
-    filename = _download(url)
-    tree = ET.parse(filename)
+    seen.add(source_key)
+
+    tree = ET.parse(source_path)
     trees = [tree]
-    for include in tree.findall(".//xs:include|.//xs:import", XS_NS):
+    includes = tree.findall(".//xs:include", XS_NS)
+    includes.extend(tree.findall(".//xs:import", XS_NS))
+    for include in includes:
         loc = include.get("schemaLocation")
         if not loc:
             continue
-        full_url = urllib.parse.urljoin(url, loc)
-        trees.extend(_load_schema_tree(full_url, seen))
+        # Remote imports are deliberately not fetched. The bundled OME schema
+        # only imports W3C's xml.xsd, which is irrelevant to the enum metadata
+        # extracted here. Relative local includes remain supported.
+        if "://" in loc:
+            continue
+        trees.extend(_load_schema_tree(source_path.parent / loc, seen))
     return trees
 
 
-def parse_ome_xsd(xsd_url: str) -> dict[str, dict]:
-    trees = _load_schema_tree(xsd_url, seen=set())
+def parse_ome_xsd(
+    xsd_source: str | os.PathLike | None = None,
+) -> dict[str, dict]:
+    """Parse OME enum and complex-type metadata from an XSD.
+
+    With no argument, the bundled OME 2016-06 schema is used without any
+    network access. An explicit argument must be a local schema path.
+    """
+    if xsd_source is None:
+        with resources.as_file(OME_XSD_RESOURCE) as bundled_xsd:
+            trees = _load_schema_tree(bundled_xsd, seen=set())
+    else:
+        if "://" in os.fspath(xsd_source):
+            raise ValueError("xsd_source must be a local path, not a URL")
+        trees = _load_schema_tree(xsd_source, seen=set())
     simple_type_enums: dict[str, list[str]] = {}
     metadata: dict[str, dict] = {}
     for tree in trees:
@@ -1364,60 +1384,7 @@ def cleanup_temp_source(cleanup_path: str | None, show_progress: bool = False) -
             print(f"\nWarning: Could not remove temp source file {cleanup_path}: {e}")
 
 
-xsd_url = "http://www.openmicroscopy.org/Schemas/OME/2016-06/ome.xsd"
-
-# Only these four OME enum fields are validated by the converters. Keeping the
-# OME 2016-06 values locally makes CLI and GUI startup deterministic offline and
-# avoids downloading an XSD (plus its imports) every time this module is loaded.
-metadata_schema = {
-    "Immersion": {
-        "type": "string",
-        "values": ["Oil", "Water", "WaterDipping", "Air", "Multi", "Glycerol", "Other"],
-    },
-    "IlluminationType": {
-        "type": "string",
-        "values": ["Transmitted", "Epifluorescence", "Oblique", "NonLinear", "Other"],
-    },
-    "AcquisitionMode": {
-        "type": "string",
-        "values": [
-            "WideField",
-            "LaserScanningConfocalMicroscopy",
-            "SpinningDiskConfocal",
-            "SlitScanConfocal",
-            "MultiPhotonMicroscopy",
-            "StructuredIllumination",
-            "SingleMoleculeImaging",
-            "TotalInternalReflection",
-            "FluorescenceLifetime",
-            "SpectralImaging",
-            "FluorescenceCorrelationSpectroscopy",
-            "NearFieldScanningOpticalMicroscopy",
-            "SecondHarmonicGenerationImaging",
-            "PALM",
-            "STORM",
-            "STED",
-            "TIRF",
-            "FSM",
-            "LCM",
-            "Other",
-            "BrightField",
-            "SweptFieldConfocal",
-            "SPIM",
-        ],
-    },
-    "ContrastMethod": {
-        "type": "string",
-        "values": [
-            "Brightfield",
-            "Phase",
-            "DIC",
-            "HoffmanModulation",
-            "ObliqueIllumination",
-            "PolarizedLight",
-            "Darkfield",
-            "Fluorescence",
-            "Other",
-        ],
-    },
-}
+# Kept as a compatibility alias for callers that passed ``xsd_url`` back to
+# parse_ome_xsd(). It now identifies the bundled schema rather than a URL.
+xsd_url = OME_XSD_RESOURCE
+metadata_schema = parse_ome_xsd()

@@ -25,6 +25,7 @@ COPY main.py \
      ParseLeicaImageXMLLite.py \
      /app/
 COPY cideconvolve_io /app/cideconvolve_io
+COPY convertleica_file_browser /app/convertleica_file_browser
 
 # Create and activate virtual environment, install dependencies
 RUN python -m venv /opt/venv \

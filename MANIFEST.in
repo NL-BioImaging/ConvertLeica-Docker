@@ -11,6 +11,7 @@ include ReadLeicaLOF.py
 include ReadLeicaXLEF.py
 include ci_leica_converters_helpers.py
 graft convertleica_file_browser
+include convertleica_file_browser/ome.xsd
 
 global-exclude __pycache__
 global-exclude *.py[cod]

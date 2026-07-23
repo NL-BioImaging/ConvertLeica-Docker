@@ -44,6 +44,9 @@ py-modules = [
   "ci_leica_converters_helpers",
 ]
 
+[tool.setuptools.package-data]
+convertleica_file_browser = ["ome.xsd"]
+
 [tool.setuptools_scm]
 version_scheme = "guess-next-dev"
 local_scheme = "no-local-version"
